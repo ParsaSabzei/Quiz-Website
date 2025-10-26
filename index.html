@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مسابقه دانشکده برق</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Background Effects -->
+    <div class="electric-bg">
+        <div class="circuit-line"></div>
+        <div class="circuit-line"></div>
+        <div class="circuit-line"></div>
+    </div>
+
+    <!-- Registration Page -->
+    <div id="registration-page" class="page active">
+        <div class="container">
+            <div class="logo-container">
+                <div class="electric-logo">
+                    <div class="bolt-icon">⚡</div>
+                </div>
+                <h1 class="main-title">مسابقه دانشکده برق</h1>
+                <p class="subtitle">آماده رقابت هستید؟</p>
+            </div>
+
+            <form id="registration-form" class="registration-form">
+                <div class="form-group">
+                    <label for="firstName">نام</label>
+                    <input 
+                        type="text" 
+                        id="firstName" 
+                        name="firstName" 
+                        required 
+                        placeholder="نام خود را وارد کنید"
+                    >
+                    <div class="input-glow"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="lastName">نام خانوادگی</label>
+                    <input 
+                        type="text" 
+                        id="lastName" 
+                        name="lastName" 
+                        required 
+                        placeholder="نام خانوادگی خود را وارد کنید"
+                    >
+                    <div class="input-glow"></div>
+                </div>
+
+                <div class="form-group">
+                    <label for="studentId">شماره دانشجویی</label>
+                    <input 
+                        type="text" 
+                        id="studentId" 
+                        name="studentId" 
+                        required 
+                        placeholder="مثال: 40012345"
+                    >
+                    <div class="input-glow"></div>
+                </div>
+
+                <button type="submit" class="btn-primary">
+                    <span>شروع مسابقه</span>
+                    <div class="btn-glow"></div>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Waiting Page -->
+    <div id="waiting-page" class="page">
+        <div class="container">
+            <div class="waiting-content">
+                <div class="pulse-circle">
+                    <div class="bolt-icon">⚡</div>
+                </div>
+                <h2 class="waiting-title">در انتظار شروع مسابقه...</h2>
+                <p class="waiting-subtitle">آماده باش!</p>
+                <div class="loading-dots">
+                    <span></span>
+                    <span></span>
+                    <span></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Quiz Page -->
+    <div id="quiz-page" class="page">
+        <div class="container">
+            <!-- Quiz Header -->
+            <div class="quiz-header">
+                <div class="player-info">
+                    <span class="player-name" id="playerName"></span>
+                    <span class="student-id" id="playerStudentId"></span>
+                </div>
+                <div class="question-counter">
+                    <span>سوال</span>
+                    <span class="current-question">1</span>
+                    <span>/</span>
+                    <span class="total-questions">10</span>
+                </div>
+            </div>
+
+            <!-- Progress Bar -->
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+
+            <!-- Timer -->
+            <div class="timer-container">
+                <div class="timer" id="timer">
+                    <span id="timeLeft">10</span>
+                </div>
+            </div>
+
+            <!-- Question Card -->
+            <div class="question-card" id="questionCard">
+                <h2 class="question-text" id="questionText"></h2>
+            </div>
+
+            <!-- Options -->
+            <div class="options-container" id="optionsContainer">
+                <!-- Options will be generated dynamically -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Eliminated Page -->
+    <div id="eliminated-page" class="page">
+        <div class="container">
+            <div class="result-content">
+                <div class="result-icon eliminated">
+                    <div class="spark"></div>
+                    <div class="spark"></div>
+                    <div class="spark"></div>
+                    ⚠️
+                </div>
+                <h2 class="result-title">شوک الکتریکی!</h2>
+                <p class="result-subtitle">متأسفانه حذف شدید</p>
+                <div class="result-stats">
+                    <div class="stat">
+                        <span class="stat-label">تعداد پاسخ صحیح</span>
+                        <span class="stat-value" id="correctAnswers">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Winner Page -->
+    <div id="winner-page" class="page">
+        <div class="container">
+            <div class="result-content">
+                <div class="result-icon winner">
+                    <div class="victory-spark"></div>
+                    <div class="victory-spark"></div>
+                    <div class="victory-spark"></div>
+                    <div class="victory-spark"></div>
+                    🏆
+                </div>
+                <h2 class="result-title">تبریک! برنده شدید</h2>
+                <p class="result-subtitle">همه پاسخ‌ها صحیح بود!</p>
+                <div class="result-stats">
+                    <div class="stat">
+                        <span class="stat-label">امتیاز نهایی</span>
+                        <span class="stat-value" id="finalScore">100%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Socket.IO Client -->
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
+
