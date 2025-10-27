@@ -389,45 +389,6 @@
             margin-bottom: 10px;
         }
 
-        .log-panel {
-            grid-column: 1 / -1;
-        }
-
-        .log-list {
-            max-height: 300px;
-            overflow-y: auto;
-            background: rgba(0, 0, 0, 0.3);
-            padding: 15px;
-            border-radius: 12px;
-            font-family: 'Courier New', monospace;
-            font-size: 0.9rem;
-        }
-
-        .log-item {
-            padding: 8px 0;
-            border-bottom: 1px solid rgba(0, 212, 255, 0.1);
-        }
-
-        .log-item:last-child {
-            border-bottom: none;
-        }
-
-        .log-time {
-            color: var(--text-dim);
-            margin-left: 10px;
-        }
-
-        .log-success {
-            color: var(--success-green);
-        }
-
-        .log-error {
-            color: var(--danger-red);
-        }
-
-        .log-info {
-            color: var(--electric-blue);
-        }
 
         .badge {
             display: inline-block;
@@ -646,31 +607,6 @@
                     <div class="empty-state">
                         <div class="empty-state-icon">🏆</div>
                         <p>هنوز برنده‌ای نداریم</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Eliminated Players Panel -->
-            <div class="panel">
-                <h2>
-                    حذف شدگان
-                    <span class="badge badge-danger" id="eliminatedBadge">0</span>
-                </h2>
-                <div class="player-list" id="eliminatedList">
-                    <div class="empty-state">
-                        <div class="empty-state-icon">⚠️</div>
-                        <p>هیچ بازیکنی حذف نشده</p>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Activity Log Panel -->
-            <div class="panel log-panel">
-                <h2>گزارش فعالیت‌ها</h2>
-                <div class="log-list" id="activityLog">
-                    <div class="log-item log-info">
-                        <span class="log-time">[--:--:--]</span>
-                        <span>پنل ادمین راه‌اندازی شد</span>
                     </div>
                 </div>
             </div>

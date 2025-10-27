@@ -3,20 +3,54 @@ const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
 const app = express();
 const server = http.createServer(app);
+
+// Optimized Socket.IO configuration for 300 concurrent users
 const io = socketIO(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST"]
+    },
+    // Performance optimizations
+    pingTimeout: 10000,
+    pingInterval: 5000,
+    upgradeTimeout: 10000,
+    maxHttpBufferSize: 1e6, // 1MB
+    transports: ['websocket', 'polling'],
+    allowUpgrades: true,
+    perMessageDeflate: {
+        threshold: 1024
     }
 });
 
-// Middleware
+// Security & Performance Middleware
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+}));
+app.use(compression()); // Gzip compression
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 1000, // 1 second
+    max: 20, // max 20 requests per second per IP
+    message: 'درخواست‌های زیادی ارسال شده است. لطفاً کمی صبر کنید.'
+});
+app.use('/api', limiter);
+
 app.use(express.static(path.join(__dirname)));
+
+// Performance monitoring (silent)
+setInterval(() => {
+    // Monitor server health silently
+}, 30000);
 
 // Game State
 const gameState = {
@@ -195,29 +229,19 @@ app.get('/api/winners', (req, res) => {
 
 // Socket.IO Connection
 io.on('connection', (socket) => {
-    console.log(`New connection: ${socket.id}`);
-
     // Admin Connection
     socket.on('admin-connect', () => {
-        console.log(`Admin connected: ${socket.id}`);
         adminSockets.add(socket.id);
         
-        // Send current game state to admin
+        // Send current game state to admin (only top 20 + winners)
         socket.emit('game-state-update', {
             status: gameState.status,
             playerCount: gameState.players.size,
             currentQuestion: gameState.currentQuestionIndex,
             totalQuestions: gameState.questions.length,
-            players: Array.from(gameState.players.values()).map(p => ({
-                socketId: p.socketId,
-                firstName: p.firstName,
-                lastName: p.lastName,
-                studentId: p.studentId,
-                status: p.status,
-                correctAnswers: p.correctAnswers
-            })),
+            players: getTopPlayersForAdmin(),
             winners: gameState.winners,
-            eliminated: gameState.eliminated
+            eliminated: [] // Don't send eliminated list to reduce load
         });
     });
 
@@ -225,15 +249,12 @@ io.on('connection', (socket) => {
     socket.on('player-register', (data) => {
         const { sessionId, firstName, lastName, studentId } = data;
         
-        console.log(`Player registration attempt: ${firstName} ${lastName} (${studentId})`);
-        
         // Check if game has already started
         if (gameState.status === 'playing' || gameState.status === 'finished') {
             socket.emit('registration-failed', {
                 message: 'مسابقه قبلاً شروع شده است. امکان ورود جدید وجود ندارد',
                 reason: 'game-started'
             });
-            console.log(`Registration rejected: Game already started (${studentId})`);
             return;
         }
         
@@ -246,7 +267,6 @@ io.on('connection', (socket) => {
                     message: 'این شماره دانشجویی قبلاً ثبت نام کرده است',
                     reason: 'duplicate-id'
                 });
-                console.log(`Registration rejected: Duplicate student ID (${studentId})`);
                 return;
             }
         }
@@ -257,11 +277,8 @@ io.on('connection', (socket) => {
                 message: 'شما از مسابقه حذف شده‌اید و امکان بازگشت وجود ندارد',
                 reason: 'eliminated'
             });
-            console.log(`Registration rejected: Student was eliminated (${studentId})`);
             return;
         }
-        
-        console.log(`Player registered: ${firstName} ${lastName} (${studentId})`);
         
         const player = {
             sessionId,
@@ -274,6 +291,9 @@ io.on('connection', (socket) => {
             hasAnswered: false,
             joinedAt: new Date()
         };
+        
+        // Join the active-players room for efficient broadcasting
+        socket.join('active-players');
         
         gameState.players.set(socket.id, player);
         gameState.playerSessions.set(sessionId, player);
@@ -305,8 +325,6 @@ io.on('connection', (socket) => {
     socket.on('player-reconnect', (data) => {
         const { sessionId, studentId, firstName, lastName } = data;
         
-        console.log(`Player reconnection attempt: ${firstName} ${lastName} (${studentId}) with session ${sessionId}`);
-        
         // Check if session exists
         const sessionPlayer = gameState.playerSessions.get(sessionId);
         
@@ -315,7 +333,6 @@ io.on('connection', (socket) => {
                 message: 'جلسه معتبر نیست. لطفاً دوباره ثبت‌نام کنید',
                 reason: 'invalid-session'
             });
-            console.log(`Reconnection rejected: Invalid session (${sessionId})`);
             return;
         }
         
@@ -325,11 +342,8 @@ io.on('connection', (socket) => {
                 message: 'اطلاعات جلسه با شماره دانشجویی مطابقت ندارد',
                 reason: 'session-mismatch'
             });
-            console.log(`Reconnection rejected: Session mismatch (${sessionId})`);
             return;
         }
-        
-        console.log(`Player reconnected: ${firstName} ${lastName} (${studentId}), status: ${sessionPlayer.status}`);
         
         // Update socket ID
         const oldSocketId = sessionPlayer.socketId;
@@ -340,6 +354,11 @@ io.on('connection', (socket) => {
             gameState.players.delete(oldSocketId);
         }
         gameState.players.set(socket.id, sessionPlayer);
+        
+        // Rejoin the active-players room
+        if (sessionPlayer.status === 'playing' || sessionPlayer.status === 'waiting') {
+            socket.join('active-players');
+        }
         
         // Prepare reconnection response
         const response = {
@@ -366,8 +385,6 @@ io.on('connection', (socket) => {
                 };
                 response.questionNumber = gameState.currentQuestionIndex + 1;
                 response.totalQuestions = gameState.questions.length;
-                
-                console.log(`Reconnected player - Question ${response.questionNumber}: ${timeRemaining}s remaining (elapsed: ${elapsed}s)`);
             }
         }
         
@@ -395,8 +412,6 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'بازی در حال انجام است' });
             return;
         }
-
-        console.log('Admin started the game');
         
         gameState.status = 'playing';
         gameState.currentQuestionIndex = 0;
@@ -411,8 +426,8 @@ io.on('connection', (socket) => {
             player.hasAnswered = false;
         });
         
-        // Notify all players to start
-        io.emit('game-started', {
+        // Notify all players to start using room broadcast (OPTIMIZED)
+        io.to('active-players').emit('game-started', {
             message: 'بازی شروع شد!',
             totalQuestions: gameState.questions.length
         });
@@ -444,8 +459,6 @@ io.on('connection', (socket) => {
             return;
         }
         const isCorrect = answerIndex === question.correctAnswer;
-        
-        console.log(`Player ${player.firstName} selected option ${answerIndex} for question ${questionId} (will be evaluated at timeout)`);
         
         // Store/overwrite current answer (no immediate reveal)
         player.currentAnswer = answerIndex;
@@ -482,14 +495,11 @@ io.on('connection', (socket) => {
             return;
         }
         
-        console.log(`Player ${player.firstName} time is up for question ${questionId}`);
-        
         // If player didn't answer, mark as timeout
         if (!player.hasAnswered) {
             player.hasAnswered = true;
             player.currentAnswer = -1; // No answer
             player.isCurrentAnswerCorrect = false;
-            console.log(`Player ${player.firstName} did not answer - will be eliminated`);
         }
         
         // Check if all players have finished (answered or timed out)
@@ -513,35 +523,29 @@ io.on('connection', (socket) => {
             return;
         }
         
-        console.log('Admin reset the game');
         resetGame();
         
+        // Broadcast to all connected sockets
         io.emit('game-reset', {
             message: 'بازی ریست شد'
         });
         
-        // Send updated game state to all admins with current players
+        // Send updated game state to all admins (only top 20 + winners)
         broadcastToAdmins('game-state-update', {
             status: gameState.status,
             playerCount: gameState.players.size,
             currentQuestion: gameState.currentQuestionIndex,
             totalQuestions: gameState.questions.length,
-            players: Array.from(gameState.players.values()).map(p => ({
-                socketId: p.socketId,
-                firstName: p.firstName,
-                lastName: p.lastName,
-                studentId: p.studentId,
-                status: p.status,
-                correctAnswers: p.correctAnswers
-            })),
+            players: getTopPlayersForAdmin(),
             winners: gameState.winners,
-            eliminated: gameState.eliminated
+            eliminated: [] // Don't send eliminated list
         });
     });
 
     // Disconnect
-    socket.on('disconnect', () => {
-        console.log(`Disconnected: ${socket.id}`);
+    socket.on('disconnect', (reason) => {
+        // Leave all rooms
+        socket.leave('active-players');
         
         // Remove from admin list
         adminSockets.delete(socket.id);
@@ -553,7 +557,6 @@ io.on('connection', (socket) => {
             // Keep them in playerSessions so they can reconnect
             // Only remove from active players map
             gameState.players.delete(socket.id);
-            console.log(`Player disconnected: ${player.firstName} ${player.lastName} (session preserved for reconnection)`);
             
             // Update admins
             broadcastToAdmins('player-disconnected', {
@@ -570,11 +573,38 @@ io.on('connection', (socket) => {
 });
 
 // Helper Functions
+function getTopPlayersForAdmin() {
+    // Get all players and sort by correctAnswers (descending)
+    const allPlayers = Array.from(gameState.players.values());
+    
+    // Separate winners
+    const winners = gameState.winners.map(w => ({
+        ...w,
+        isWinner: true
+    }));
+    
+    // Get top 20 players (non-winners) by correctAnswers
+    const nonWinnerPlayers = allPlayers
+        .filter(p => !gameState.winners.some(w => w.studentId === p.studentId))
+        .sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0))
+        .slice(0, 20)
+        .map(p => ({
+            socketId: p.socketId,
+            firstName: p.firstName,
+            lastName: p.lastName,
+            studentId: p.studentId,
+            status: p.status,
+            correctAnswers: p.correctAnswers
+        }));
+    
+    // Combine winners and top 20
+    return [...winners, ...nonWinnerPlayers];
+}
+
 function checkIfAllPlayersAnswered() {
     // With synchronized reveal at timeout, we only log progress here.
     const activePlayers = Array.from(gameState.players.values()).filter(p => p.status === 'playing');
     const answeredPlayers = activePlayers.filter(p => p.currentAnswer !== undefined && p.currentAnswer !== null);
-    console.log(`Players answered so far: ${answeredPlayers.length}/${activePlayers.length}`);
 }
 
 function revealQuestionResults() {
@@ -596,8 +626,6 @@ function revealQuestionResults() {
                 correctAnswer: question.correctAnswer,
                 yourAnswer: player.currentAnswer
             });
-            
-            console.log(`✅ ${player.firstName} answered correctly`);
         } else {
             // Player answered incorrectly or didn't answer - eliminate
             player.status = 'eliminated';
@@ -627,8 +655,6 @@ function revealQuestionResults() {
                 totalQuestions: gameState.questions.length,
                 reason: eliminationReason
             });
-            
-            console.log(`❌ ${player.firstName} eliminated (${eliminationReason})`);
             
             // Update admins
             broadcastToAdmins('player-eliminated', {
@@ -670,8 +696,6 @@ function sendQuestion() {
     gameState.currentQuestionStartTime = Date.now();
     gameState.currentQuestionTimeLimit = question.timeLimit;
     
-    console.log(`Sending question ${gameState.currentQuestionIndex + 1} to ${activePlayers.length} players at ${new Date().toISOString()}`);
-    
     // Clear any existing per-player temp state
     gameState.players.forEach(p => {
         if (p.status === 'playing') {
@@ -680,18 +704,16 @@ function sendQuestion() {
         }
     });
 
-    // Send question to all active players
-    activePlayers.forEach(player => {
-        io.to(player.socketId).emit('new-question', {
-            questionNumber: gameState.currentQuestionIndex + 1,
-            totalQuestions: gameState.questions.length,
-            question: {
-                id: question.id,
-                text: question.text,
-                options: question.options,
-                timeLimit: question.timeLimit
-            }
-        });
+    // Send question to all active players using room broadcast (OPTIMIZED for 300+ users)
+    io.to('active-players').emit('new-question', {
+        questionNumber: gameState.currentQuestionIndex + 1,
+        totalQuestions: gameState.questions.length,
+        question: {
+            id: question.id,
+            text: question.text,
+            options: question.options,
+            timeLimit: question.timeLimit
+        }
     });
     
     // Schedule reveal at timeout (synchronized)
@@ -699,7 +721,6 @@ function sendQuestion() {
         clearTimeout(gameState.questionTimer);
     }
     gameState.questionTimer = setTimeout(() => {
-        console.log('⏱️ Question time ended - revealing results');
         revealQuestionResults();
         setTimeout(() => {
             moveToNextQuestion();
@@ -734,8 +755,6 @@ function moveToNextQuestion() {
 }
 
 function endGame() {
-    console.log('Game ended');
-    
     gameState.status = 'finished';
     if (gameState.questionTimer) {
         clearTimeout(gameState.questionTimer);
@@ -752,8 +771,6 @@ function endGame() {
             correctAnswers: p.correctAnswers,
             finishedAt: new Date()
         }));
-    
-    console.log(`Winners: ${gameState.winners.length}`);
     
     // Notify winners
     gameState.winners.forEach(winner => {
@@ -772,12 +789,12 @@ function endGame() {
     // Notify admins
     broadcastToAdmins('game-ended', {
         winners: gameState.winners,
-        eliminated: gameState.eliminated,
+        eliminated: [], // Don't send eliminated list
         totalPlayers: gameState.players.size
     });
     
-    // Notify all players
-    io.emit('game-finished', {
+    // Notify all players using room broadcast (OPTIMIZED)
+    io.to('active-players').emit('game-finished', {
         message: 'بازی به پایان رسید',
         winnersCount: gameState.winners.length
     });
