@@ -1,3 +1,78 @@
+// Authentication Configuration
+const ADMIN_CREDENTIALS = {
+    username: 'admin',
+    password: 'Bargh@2025' // رمز عبور: Bargh@2025
+};
+
+// Check if admin is logged in
+function isAdminLoggedIn() {
+    return sessionStorage.getItem('adminLoggedIn') === 'true';
+}
+
+function setAdminLoggedIn() {
+    sessionStorage.setItem('adminLoggedIn', 'true');
+}
+
+function logoutAdmin() {
+    sessionStorage.removeItem('adminLoggedIn');
+    location.reload();
+}
+
+// Handle Login
+document.addEventListener('DOMContentLoaded', () => {
+    const loginPage = document.getElementById('login-page');
+    const adminDashboard = document.getElementById('admin-dashboard');
+    const loginForm = document.getElementById('login-form');
+    const loginError = document.getElementById('login-error');
+    
+    // Check if already logged in
+    if (isAdminLoggedIn()) {
+        loginPage.classList.add('hidden');
+        adminDashboard.style.display = 'flex';
+        initializeAdmin();
+    }
+    
+    // Handle login form submission
+    loginForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        
+        const username = document.getElementById('admin-username').value;
+        const password = document.getElementById('admin-password').value;
+        
+        if (username === ADMIN_CREDENTIALS.username && password === ADMIN_CREDENTIALS.password) {
+            // Login successful
+            setAdminLoggedIn();
+            loginPage.classList.add('hidden');
+            adminDashboard.style.display = 'flex';
+            loginError.classList.remove('show');
+            initializeAdmin();
+        } else {
+            // Login failed
+            loginError.classList.add('show');
+            document.getElementById('admin-password').value = '';
+            document.getElementById('admin-password').focus();
+            
+            // Hide error after 3 seconds
+            setTimeout(() => {
+                loginError.classList.remove('show');
+            }, 3000);
+        }
+    });
+});
+
+// Initialize admin panel after successful login
+function initializeAdmin() {
+    // Socket connection will be initialized here
+    // Force socket to connect if not already connected
+    if (socket.connected) {
+        socket.emit('admin-connect');
+    }
+    
+    // Initialize UI
+    updateUI();
+    addLog('پنل ادمین راه‌اندازی شد', 'info');
+}
+
 // Connect to Socket.IO server
 const socket = io();
 
@@ -36,8 +111,12 @@ let gameState = {
 socket.on('connect', () => {
     console.log('Connected to server');
     updateConnectionStatus(true);
-    socket.emit('admin-connect');
-    addLog('اتصال به سرور برقرار شد', 'success');
+    
+    // Only emit admin-connect if logged in
+    if (isAdminLoggedIn()) {
+        socket.emit('admin-connect');
+        addLog('اتصال به سرور برقرار شد', 'success');
+    }
 });
 
 socket.on('disconnect', () => {
