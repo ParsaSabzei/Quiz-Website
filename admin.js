@@ -70,7 +70,6 @@ function initializeAdmin() {
     
     // Initialize UI
     updateUI();
-    addLog('پنل ادمین راه‌اندازی شد', 'info');
 }
 
 // Connect to Socket.IO server
@@ -88,11 +87,8 @@ const elements = {
     resetGameBtn: document.getElementById('resetGameBtn'),
     activePlayersList: document.getElementById('activePlayersList'),
     winnersList: document.getElementById('winnersList'),
-    eliminatedList: document.getElementById('eliminatedList'),
-    activityLog: document.getElementById('activityLog'),
     activePlayersBadge: document.getElementById('activePlayersBadge'),
     winnersBadge: document.getElementById('winnersBadge'),
-    eliminatedBadge: document.getElementById('eliminatedBadge'),
     connectionIndicator: document.getElementById('connectionIndicator'),
     connectionStatus: document.getElementById('connectionStatus')
 };
@@ -115,14 +111,12 @@ socket.on('connect', () => {
     // Only emit admin-connect if logged in
     if (isAdminLoggedIn()) {
         socket.emit('admin-connect');
-        addLog('اتصال به سرور برقرار شد', 'success');
     }
 });
 
 socket.on('disconnect', () => {
     console.log('Disconnected from server');
     updateConnectionStatus(false);
-    addLog('اتصال به سرور قطع شد', 'error');
 });
 
 // Socket Event Listeners
@@ -141,7 +135,6 @@ socket.on('game-state-update', (data) => {
 
 socket.on('player-joined', (data) => {
     console.log('Player joined:', data);
-    addLog(`بازیکن جدید: ${data.player.firstName} ${data.player.lastName}`, 'success');
     elements.totalPlayers.textContent = data.totalPlayers;
     
     // Add player to list
@@ -154,7 +147,6 @@ socket.on('player-joined', (data) => {
 
 socket.on('player-left', (data) => {
     console.log('Player left:', data);
-    addLog(`بازیکن خارج شد: ${data.player.firstName} ${data.player.lastName}`, 'info');
     elements.totalPlayers.textContent = data.totalPlayers;
     
     // Remove player from list
@@ -168,21 +160,17 @@ socket.on('player-left', (data) => {
 socket.on('game-started', (data) => {
     console.log('Game started:', data);
     gameState.status = 'playing';
-    addLog('🚀 بازی شروع شد!', 'success');
     updateUI();
 });
 
 socket.on('question-sent', (data) => {
     console.log('Question sent:', data);
     gameState.currentQuestion = data.questionNumber;
-    addLog(`سوال ${data.questionNumber} ارسال شد (${data.activePlayers} بازیکن فعال)`, 'info');
     updateUI();
 });
 
 socket.on('player-eliminated', (data) => {
     console.log('Player eliminated:', data);
-    const reason = data.reason === 'timeout' ? '(زمان تمام شد)' : '(پاسخ اشتباه)';
-    addLog(`❌ ${data.player.firstName} ${data.player.lastName} حذف شد ${reason}`, 'error');
     
     // Move player to eliminated list
     const player = gameState.players.find(p => p.studentId === data.player.studentId);
@@ -202,7 +190,6 @@ socket.on('game-ended', (data) => {
     gameState.status = 'finished';
     gameState.winners = data.winners;
     gameState.eliminated = data.eliminated;
-    addLog(`🏁 بازی به پایان رسید! تعداد برندگان: ${data.winners.length}`, 'success');
     updateUI();
 });
 
@@ -213,14 +200,12 @@ socket.on('game-reset', (data) => {
     gameState.winners = [];
     gameState.eliminated = [];
     gameState.currentQuestion = 0;
-    addLog('🔄 بازی ریست شد', 'info');
     updateButtons(); // Update buttons immediately after reset
     // Full updateUI will be called when game-state-update arrives
 });
 
 socket.on('error', (data) => {
     console.error('Error:', data);
-    addLog(`خطا: ${data.message}`, 'error');
     alert(data.message);
 });
 
@@ -233,19 +218,16 @@ elements.startGameBtn.addEventListener('click', () => {
     
     if (confirm(`آیا می‌خواهید بازی را با ${gameState.players.length} بازیکن شروع کنید؟`)) {
         socket.emit('admin-start-game');
-        addLog('درخواست شروع بازی ارسال شد...', 'info');
     }
 });
 
 elements.nextQuestionBtn.addEventListener('click', () => {
     socket.emit('admin-next-question');
-    addLog('درخواست سوال بعدی ارسال شد...', 'info');
 });
 
 elements.resetGameBtn.addEventListener('click', () => {
     if (confirm('آیا مطمئن هستید که می‌خواهید بازی را ریست کنید؟')) {
         socket.emit('admin-reset-game');
-        addLog('درخواست ریست بازی ارسال شد...', 'info');
     }
 });
 
@@ -255,7 +237,6 @@ function updateUI() {
     updateStats();
     updatePlayersList();
     updateWinnersList();
-    updateEliminatedList();
     updateButtons();
 }
 
@@ -287,44 +268,49 @@ function updateStats() {
 }
 
 function updatePlayersList() {
-    const activePlayers = gameState.players.filter(p => 
-        p.status === 'waiting' || p.status === 'playing'
-    );
+    // Get all players (including eliminated) and sort by correctAnswers
+    const allPlayers = gameState.players;
+    const sortedPlayers = [...allPlayers].sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0));
     
-    console.log('Updating players list:', {
-        totalPlayers: gameState.players.length,
-        activePlayers: activePlayers.length,
-        players: gameState.players
+    console.log('Updating rankings:', {
+        totalPlayers: allPlayers.length,
+        displayedPlayers: sortedPlayers.length
     });
     
-    elements.activePlayersBadge.textContent = activePlayers.length;
+    elements.activePlayersBadge.textContent = allPlayers.length;
     
-    if (activePlayers.length === 0) {
+    if (sortedPlayers.length === 0) {
         elements.activePlayersList.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">👥</div>
-                <p>هیچ بازیکن فعالی وجود ندارد</p>
+                <div class="empty-state-icon">📊</div>
+                <p>هنوز بازیکنی وجود ندارد</p>
             </div>
         `;
         return;
     }
     
-    elements.activePlayersList.innerHTML = activePlayers.map(player => `
-        <div class="player-item">
-            <div class="player-name">${player.firstName} ${player.lastName}</div>
-            <div class="player-id">شماره دانشجویی: ${player.studentId}</div>
-            <div class="player-stats">
-                <div class="player-stat">
-                    <span class="player-stat-label">وضعیت</span>
-                    <span class="player-stat-value">${getStatusText(player.status)}</span>
+    elements.activePlayersList.innerHTML = `
+        ${sortedPlayers.map((player, index) => `
+            <div class="player-item" style="${player.status === 'eliminated' ? 'opacity: 0.7; border-color: var(--danger-red);' : ''}">
+                <div class="player-name">
+                    ${index + 1}. ${player.firstName} ${player.lastName}
+                    ${player.status === 'eliminated' ? '<span style="color: var(--danger-red); margin-right: 10px;">❌</span>' : ''}
+                    ${player.status === 'winner' ? '<span style="color: var(--yellow); margin-right: 10px;">🏆</span>' : ''}
                 </div>
-                <div class="player-stat">
-                    <span class="player-stat-label">پاسخ صحیح</span>
-                    <span class="player-stat-value">${player.correctAnswers || 0}</span>
+                <div class="player-id">شماره دانشجویی: ${player.studentId}</div>
+                <div class="player-stats">
+                    <div class="player-stat">
+                        <span class="player-stat-label">پاسخ صحیح</span>
+                        <span class="player-stat-value" style="color: ${player.status === 'eliminated' ? 'var(--danger-red)' : 'var(--success-green)'}; font-size: 1.3rem; font-weight: 700;">${player.correctAnswers || 0}</span>
+                    </div>
+                    <div class="player-stat">
+                        <span class="player-stat-label">وضعیت</span>
+                        <span class="player-stat-value">${getStatusText(player.status)}</span>
+                    </div>
                 </div>
             </div>
-        </div>
-    `).join('');
+        `).join('')}
+    `;
 }
 
 function updateWinnersList() {
@@ -351,45 +337,6 @@ function updateWinnersList() {
                     <span class="player-stat-label">پاسخ صحیح</span>
                     <span class="player-stat-value">${winner.correctAnswers}</span>
                 </div>
-            </div>
-        </div>
-    `).join('');
-}
-
-function updateEliminatedList() {
-    console.log('Updating eliminated list:', gameState.eliminated);
-    
-    elements.eliminatedBadge.textContent = gameState.eliminated.length;
-    
-    if (gameState.eliminated.length === 0) {
-        elements.eliminatedList.innerHTML = `
-            <div class="empty-state">
-                <div class="empty-state-icon">⚠️</div>
-                <p>هیچ بازیکنی حذف نشده</p>
-            </div>
-        `;
-        return;
-    }
-    
-    elements.eliminatedList.innerHTML = gameState.eliminated.map(player => `
-        <div class="player-item">
-            <div class="player-name">❌ ${player.firstName} ${player.lastName}</div>
-            <div class="player-id">شماره دانشجویی: ${player.studentId}</div>
-            <div class="player-stats">
-                <div class="player-stat">
-                    <span class="player-stat-label">پاسخ صحیح</span>
-                    <span class="player-stat-value">${player.correctAnswers || 0}</span>
-                </div>
-                <div class="player-stat">
-                    <span class="player-stat-label">حذف در سوال</span>
-                    <span class="player-stat-value">${player.eliminatedAtQuestion || '-'}</span>
-                </div>
-                ${player.reason ? `
-                <div class="player-stat">
-                    <span class="player-stat-label">دلیل</span>
-                    <span class="player-stat-value">${player.reason === 'timeout' ? 'تایم اوت' : 'پاسخ اشتباه'}</span>
-                </div>
-                ` : ''}
             </div>
         </div>
     `).join('');
@@ -422,25 +369,6 @@ function updateConnectionStatus(connected) {
     }
 }
 
-function addLog(message, type = 'info') {
-    const time = new Date().toLocaleTimeString('fa-IR');
-    const logClass = `log-${type}`;
-    
-    const logItem = document.createElement('div');
-    logItem.className = `log-item ${logClass}`;
-    logItem.innerHTML = `
-        <span class="log-time">[${time}]</span>
-        <span>${message}</span>
-    `;
-    
-    elements.activityLog.insertBefore(logItem, elements.activityLog.firstChild);
-    
-    // Keep only last 50 logs
-    while (elements.activityLog.children.length > 50) {
-        elements.activityLog.removeChild(elements.activityLog.lastChild);
-    }
-}
-
 function getStatusText(status) {
     const statusMap = {
         'waiting': 'در انتظار',
@@ -453,5 +381,4 @@ function getStatusText(status) {
 
 // Initialize UI
 updateUI();
-addLog('پنل ادمین راه‌اندازی شد', 'info');
 

@@ -272,9 +272,16 @@ socket.on('game-finished', (data) => {
 });
 
 socket.on('game-reset', (data) => {
-    console.log('Game reset');
-    clearSession();
-    resetGame();
+    console.log('Game reset - returning to waiting room');
+    
+    // Update player status to waiting (keep session)
+    gameState.playerStatus = 'waiting';
+    gameState.player.correctAnswers = 0;
+    saveSession();
+    
+    // Go to waiting page
+    showPage('waiting');
+    updatePlayerInfo();
 });
 
 socket.on('error', (data) => {
