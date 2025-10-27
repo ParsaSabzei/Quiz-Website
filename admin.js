@@ -268,45 +268,44 @@ function updateStats() {
 }
 
 function updatePlayersList() {
-    const activePlayers = gameState.players.filter(p => 
-        p.status === 'waiting' || p.status === 'playing'
-    );
+    // Get all players (including eliminated) and sort by correctAnswers
+    const allPlayers = gameState.players;
+    const sortedPlayers = [...allPlayers].sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0));
     
-    // Sort by correctAnswers (descending) - server already sends top 20
-    const sortedPlayers = activePlayers.sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0));
-    
-    console.log('Updating players list:', {
-        totalPlayers: gameState.players.length,
-        activePlayers: activePlayers.length,
+    console.log('Updating rankings:', {
+        totalPlayers: allPlayers.length,
         displayedPlayers: sortedPlayers.length
     });
     
-    elements.activePlayersBadge.textContent = activePlayers.length;
+    elements.activePlayersBadge.textContent = allPlayers.length;
     
     if (sortedPlayers.length === 0) {
         elements.activePlayersList.innerHTML = `
             <div class="empty-state">
-                <div class="empty-state-icon">👥</div>
-                <p>هیچ بازیکن فعالی وجود ندارد</p>
+                <div class="empty-state-icon">📊</div>
+                <p>هنوز بازیکنی وجود ندارد</p>
             </div>
         `;
         return;
     }
     
     elements.activePlayersList.innerHTML = `
-        ${sortedPlayers.length >= 20 ? '<div style="color: var(--text-dim); text-align: center; padding: 10px; font-size: 0.9rem;">نمایش 20 نفر برتر</div>' : ''}
         ${sortedPlayers.map((player, index) => `
-            <div class="player-item">
-                <div class="player-name">${index + 1}. ${player.firstName} ${player.lastName}</div>
+            <div class="player-item" style="${player.status === 'eliminated' ? 'opacity: 0.7; border-color: var(--danger-red);' : ''}">
+                <div class="player-name">
+                    ${index + 1}. ${player.firstName} ${player.lastName}
+                    ${player.status === 'eliminated' ? '<span style="color: var(--danger-red); margin-right: 10px;">❌</span>' : ''}
+                    ${player.status === 'winner' ? '<span style="color: var(--yellow); margin-right: 10px;">🏆</span>' : ''}
+                </div>
                 <div class="player-id">شماره دانشجویی: ${player.studentId}</div>
                 <div class="player-stats">
                     <div class="player-stat">
-                        <span class="player-stat-label">وضعیت</span>
-                        <span class="player-stat-value">${getStatusText(player.status)}</span>
+                        <span class="player-stat-label">پاسخ صحیح</span>
+                        <span class="player-stat-value" style="color: ${player.status === 'eliminated' ? 'var(--danger-red)' : 'var(--success-green)'}; font-size: 1.3rem; font-weight: 700;">${player.correctAnswers || 0}</span>
                     </div>
                     <div class="player-stat">
-                        <span class="player-stat-label">پاسخ صحیح</span>
-                        <span class="player-stat-value">${player.correctAnswers || 0}</span>
+                        <span class="player-stat-label">وضعیت</span>
+                        <span class="player-stat-value">${getStatusText(player.status)}</span>
                     </div>
                 </div>
             </div>

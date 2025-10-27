@@ -574,20 +574,25 @@ io.on('connection', (socket) => {
 
 // Helper Functions
 function getTopPlayersForAdmin() {
-    // Get all players and sort by correctAnswers (descending)
-    const allPlayers = Array.from(gameState.players.values());
+    // Get ALL players (including eliminated) from both active players and sessions
+    const allPlayersMap = new Map();
     
-    // Separate winners
-    const winners = gameState.winners.map(w => ({
-        ...w,
-        isWinner: true
-    }));
+    // Add active players
+    gameState.players.forEach((player, socketId) => {
+        allPlayersMap.set(player.studentId, player);
+    });
     
-    // Get top 20 players (non-winners) by correctAnswers
-    const nonWinnerPlayers = allPlayers
-        .filter(p => !gameState.winners.some(w => w.studentId === p.studentId))
+    // Add players from sessions (in case they're disconnected)
+    gameState.playerSessions.forEach((player, sessionId) => {
+        if (!allPlayersMap.has(player.studentId)) {
+            allPlayersMap.set(player.studentId, player);
+        }
+    });
+    
+    // Convert to array and sort by correctAnswers (descending)
+    const allPlayers = Array.from(allPlayersMap.values())
         .sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0))
-        .slice(0, 20)
+        .slice(0, 20) // Top 20 only
         .map(p => ({
             socketId: p.socketId,
             firstName: p.firstName,
@@ -597,8 +602,7 @@ function getTopPlayersForAdmin() {
             correctAnswers: p.correctAnswers
         }));
     
-    // Combine winners and top 20
-    return [...winners, ...nonWinnerPlayers];
+    return allPlayers;
 }
 
 function checkIfAllPlayersAnswered() {
@@ -803,12 +807,25 @@ function endGame() {
 function resetGame() {
     gameState.status = 'waiting';
     
-    // Clear all players from the game
-    gameState.players.clear();
-    gameState.playerSessions.clear();
+    // Reset all players to waiting status (keep sessions and registrations)
+    gameState.players.forEach(player => {
+        player.status = 'waiting';
+        player.correctAnswers = 0;
+        player.hasAnswered = false;
+        player.currentAnswer = null;
+        player.isCurrentAnswerCorrect = null;
+    });
     
-    // Clear tracking sets to allow re-registration
-    gameState.registeredStudentIds.clear();
+    // Reset all player sessions to waiting status
+    gameState.playerSessions.forEach(player => {
+        player.status = 'waiting';
+        player.correctAnswers = 0;
+        player.hasAnswered = false;
+        player.currentAnswer = null;
+        player.isCurrentAnswerCorrect = null;
+    });
+    
+    // Clear eliminated IDs to allow them to play again
     gameState.eliminatedStudentIds.clear();
     
     gameState.currentQuestionIndex = 0;
