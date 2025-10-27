@@ -1,8 +1,8 @@
 {
-    "app":"hardcore-dubinsky-qhb30rp7l"
-    "port":3000
-    "build":{
-    "location":"iran"
-    }
-    "disks":[]
+  "app": "hardcore-dubinsky-qhb30rp7l",
+  "port": 3000,
+  "build": {
+    "location": "iran"
+  },
+  "disks": []
 }
