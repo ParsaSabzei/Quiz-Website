@@ -3,6 +3,7 @@ const socket = io();
 
 // Game State
 let gameState = {
+    sessionId: null,
     player: {
         firstName: '',
         lastName: '',
@@ -14,7 +15,8 @@ let gameState = {
     correctAnswers: 0,
     timer: null,
     timeLeft: 15,
-    isConnected: false
+    isConnected: false,
+    playerStatus: 'not-registered' // not-registered, waiting, playing, eliminated, winner
 };
 
 // DOM Elements
@@ -26,16 +28,78 @@ const pages = {
     winner: document.getElementById('winner-page')
 };
 
+// Session Management
+function saveSession() {
+    const sessionData = {
+        sessionId: gameState.sessionId,
+        player: gameState.player,
+        playerStatus: gameState.playerStatus,
+        correctAnswers: gameState.correctAnswers
+    };
+    localStorage.setItem('quizSession', JSON.stringify(sessionData));
+}
+
+function loadSession() {
+    const sessionData = localStorage.getItem('quizSession');
+    if (sessionData) {
+        try {
+            return JSON.parse(sessionData);
+        } catch (e) {
+            console.error('Failed to parse session data:', e);
+            localStorage.removeItem('quizSession');
+        }
+    }
+    return null;
+}
+
+function clearSession() {
+    localStorage.removeItem('quizSession');
+}
+
+function generateSessionId() {
+    return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     setupSocketListeners();
+    
+    // Check if user wants to clear session (for new player in same browser)
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.get('new') === 'true') {
+        console.log('Clearing session for new player...');
+        clearSession();
+        // Remove query parameter from URL
+        window.history.replaceState({}, document.title, window.location.pathname);
+    }
+    
+    // Try to restore session
+    const savedSession = loadSession();
+    if (savedSession && savedSession.sessionId) {
+        console.log('Found existing session, attempting to reconnect...', savedSession);
+        gameState.sessionId = savedSession.sessionId;
+        gameState.player = savedSession.player;
+        gameState.playerStatus = savedSession.playerStatus;
+        gameState.correctAnswers = savedSession.correctAnswers || 0;
+    }
 });
 
 // Socket Connection Events
 socket.on('connect', () => {
     console.log('Connected to server');
     gameState.isConnected = true;
+    
+    // If we have a session, try to reconnect
+    if (gameState.sessionId && gameState.player.studentId) {
+        console.log('Attempting to reconnect with session:', gameState.sessionId);
+        socket.emit('player-reconnect', {
+            sessionId: gameState.sessionId,
+            studentId: gameState.player.studentId,
+            firstName: gameState.player.firstName,
+            lastName: gameState.player.lastName
+        });
+    }
 });
 
 socket.on('disconnect', () => {
@@ -44,43 +108,140 @@ socket.on('disconnect', () => {
 });
 
 socket.on('registration-success', (data) => {
-    console.log('Registration successful:', data);
+    console.log('✅ Registration successful:', data);
+    console.log('Player:', gameState.player);
+    gameState.sessionId = data.sessionId;
+    gameState.playerStatus = data.status || 'waiting';
+    saveSession();
+    console.log('Session saved. Current status:', gameState.playerStatus);
     // Stay in waiting page until game starts
 });
 
+socket.on('registration-failed', (data) => {
+    console.log('Registration failed:', data);
+    alert(data.message);
+    // Stay on registration page
+    showPage('registration');
+});
+
+socket.on('reconnect-success', (data) => {
+    console.log('Reconnection successful:', data);
+    gameState.playerStatus = data.status;
+    gameState.correctAnswers = data.correctAnswers || 0;
+    
+    // Update UI based on current status
+    if (data.status === 'eliminated') {
+        showEliminatedPage();
+    } else if (data.status === 'winner') {
+        showWinnerPage();
+    } else if (data.status === 'playing' && data.currentQuestion) {
+        // Resume game
+        gameState.currentQuestion = data.currentQuestion;
+        gameState.currentQuestionNumber = data.questionNumber;
+        gameState.totalQuestions = data.totalQuestions;
+        showPage('quiz');
+        updatePlayerInfo();
+        
+        // Show question with remaining time
+        showQuestionWithTimeRemaining(data.currentQuestion.timeRemaining);
+    } else if (data.status === 'waiting') {
+        showPage('waiting');
+    }
+    
+    saveSession();
+});
+
+socket.on('reconnect-failed', (data) => {
+    console.log('Reconnection failed:', data);
+    // Clear invalid session and show registration
+    clearSession();
+    gameState.sessionId = null;
+    gameState.player = { firstName: '', lastName: '', studentId: '' };
+    gameState.playerStatus = 'not-registered';
+    showPage('registration');
+    
+    if (data.message) {
+        alert(data.message);
+    }
+});
+
 socket.on('game-started', (data) => {
-    console.log('Game started:', data);
+    console.log('🎮 Game started event received:', data);
+    console.log('Current page:', Object.keys(pages).find(key => pages[key].classList.contains('active')));
     gameState.totalQuestions = data.totalQuestions;
+    gameState.playerStatus = 'playing';
+    saveSession();
+    // Move to quiz UI immediately; first question will arrive shortly
+    if (!pages.quiz.classList.contains('active')) {
+        console.log('📄 Switching to quiz page on game start...');
+        showPage('quiz');
+        updatePlayerInfo();
+    }
+    console.log('✅ Game state updated, waiting for first question...');
     // Wait for first question
 });
 
 socket.on('new-question', (data) => {
-    console.log('New question received:', data);
+    console.log('❓ New question event received:', data);
+    console.log('Question ID:', data.question?.id, 'Question Number:', data.questionNumber);
     gameState.currentQuestion = data.question;
     gameState.currentQuestionNumber = data.questionNumber;
     gameState.totalQuestions = data.totalQuestions;
+    gameState.playerStatus = 'playing';
     
     // Show quiz page if not already shown
     if (!pages.quiz.classList.contains('active')) {
+        console.log('📄 Switching to quiz page...');
         showPage('quiz');
         updatePlayerInfo();
     }
     
+    console.log('🎯 Showing question...');
     showQuestion();
+    saveSession();
+    console.log('✅ Question displayed successfully');
+});
+
+socket.on('answer-submitted', (data) => {
+    console.log('✅ Answer submitted:', data.message);
+    // Just show that answer was received, keep waiting for timer
 });
 
 socket.on('answer-result', (data) => {
-    console.log('Answer result:', data);
+    console.log('📊 Answer result received:', data);
+    
+    // Stop timer
+    if (gameState.timer) {
+        clearInterval(gameState.timer);
+    }
+    
+    // Show the correct answer
+    const options = document.querySelectorAll('.option');
+    options.forEach((opt, index) => {
+        opt.classList.add('disabled');
+        opt.classList.remove('selected'); // Remove selected state
+        if (index === data.correctAnswer) {
+            opt.classList.add('correct');
+        }
+        if (index === data.yourAnswer && !data.correct) {
+            opt.classList.add('incorrect');
+        }
+    });
     
     if (data.eliminated) {
         // Will receive player-eliminated event
         return;
     }
+    
+    // If correct, wait for next question
+    console.log('✅ Correct answer! Waiting for next question...');
 });
 
 socket.on('player-eliminated', (data) => {
     console.log('Player eliminated:', data);
     gameState.correctAnswers = data.correctAnswers;
+    gameState.playerStatus = 'eliminated';
+    saveSession();
     
     if (gameState.timer) {
         clearInterval(gameState.timer);
@@ -94,6 +255,8 @@ socket.on('player-eliminated', (data) => {
 socket.on('game-won', (data) => {
     console.log('Player won:', data);
     gameState.correctAnswers = data.correctAnswers;
+    gameState.playerStatus = 'winner';
+    saveSession();
     
     if (gameState.timer) {
         clearInterval(gameState.timer);
@@ -109,8 +272,16 @@ socket.on('game-finished', (data) => {
 });
 
 socket.on('game-reset', (data) => {
-    console.log('Game reset');
-    resetGame();
+    console.log('Game reset - returning to waiting room');
+    
+    // Update player status to waiting (keep session)
+    gameState.playerStatus = 'waiting';
+    gameState.player.correctAnswers = 0;
+    saveSession();
+    
+    // Go to waiting page
+    showPage('waiting');
+    updatePlayerInfo();
 });
 
 socket.on('error', (data) => {
@@ -147,9 +318,11 @@ function handleRegistration(e) {
     }
     
     gameState.player = { firstName, lastName, studentId };
+    gameState.sessionId = generateSessionId();
     
     // Send registration to server
     socket.emit('player-register', {
+        sessionId: gameState.sessionId,
         firstName,
         lastName,
         studentId
@@ -206,7 +379,7 @@ function showQuestion() {
     const questionCard = document.getElementById('questionCard');
     questionCard.style.animation = 'none';
     setTimeout(() => {
-        questionCard.style.animation = 'slide-in 0.5s ease-out';
+        questionCard.style.animation = 'slide-in 0.3s ease-out'; // Reduced from 0.5s to 0.3s
     }, 10);
     
     // Show options
@@ -224,6 +397,57 @@ function showQuestion() {
     
     // Start timer
     startTimer(question.timeLimit || 15);
+}
+
+// Show Question with Specific Time Remaining (for reconnection)
+function showQuestionWithTimeRemaining(timeRemaining) {
+    const question = gameState.currentQuestion;
+    
+    if (!question) {
+        console.error('No question data');
+        return;
+    }
+    
+    // Stop any existing timer
+    if (gameState.timer) {
+        clearInterval(gameState.timer);
+    }
+    
+    // Update question counter
+    document.querySelector('.current-question').textContent = gameState.currentQuestionNumber;
+    document.querySelector('.total-questions').textContent = gameState.totalQuestions;
+    
+    // Update progress bar
+    const progress = ((gameState.currentQuestionNumber - 1) / gameState.totalQuestions) * 100;
+    document.getElementById('progressFill').style.width = `${progress}%`;
+    
+    // Show question text
+    const questionTextEl = document.getElementById('questionText');
+    questionTextEl.textContent = question.text;
+    
+    // Trigger animation by removing and re-adding the question card
+    const questionCard = document.getElementById('questionCard');
+    questionCard.style.animation = 'none';
+    setTimeout(() => {
+        questionCard.style.animation = 'slide-in 0.3s ease-out'; // Reduced from 0.5s to 0.3s
+    }, 10);
+    
+    // Show options
+    const optionsContainer = document.getElementById('optionsContainer');
+    optionsContainer.innerHTML = '';
+    
+    question.options.forEach((option, index) => {
+        const optionEl = document.createElement('div');
+        optionEl.className = 'option';
+        optionEl.textContent = option;
+        optionEl.dataset.index = index;
+        optionEl.addEventListener('click', () => handleAnswer(index));
+        optionsContainer.appendChild(optionEl);
+    });
+    
+    // Start timer with remaining time
+    console.log(`Starting timer with ${timeRemaining}s remaining`);
+    startTimer(timeRemaining);
 }
 
 // Start Timer
@@ -262,7 +486,9 @@ function handleTimeout() {
         return;
     }
     
-    // Disable all options
+    console.log('⏰ Time is up!');
+    
+    // Disable all options at timeout
     const options = document.querySelectorAll('.option');
     options.forEach(opt => opt.classList.add('disabled'));
     
@@ -270,37 +496,34 @@ function handleTimeout() {
     socket.emit('player-timeout', {
         questionId: question.id
     });
+    
+    console.log('⏳ Waiting for results...');
 }
 
 // Handle Answer
 function handleAnswer(selectedIndex) {
-    // Stop timer
-    if (gameState.timer) {
-        clearInterval(gameState.timer);
-    }
-    
     const question = gameState.currentQuestion;
     const options = document.querySelectorAll('.option');
     
-    // Disable all options
-    options.forEach(opt => opt.classList.add('disabled'));
+    // Ignore clicks after timeout
+    if (gameState.timeLeft <= 0) {
+        return;
+    }
     
-    // Mark selected option
+    // Reset selection UI
+    options.forEach(opt => opt.classList.remove('selected'));
+    
+    // Mark selected option (but keep others clickable until timeout)
     options[selectedIndex].classList.add('selected');
     
-    // Send answer to server
+    console.log(`🎯 Selected option ${selectedIndex}, you can still change until time is up...`);
+    
+    // Send current selection to server (overwrites previous selection)
     socket.emit('player-answer', {
         questionId: question.id,
         answerIndex: selectedIndex,
         timeRemaining: gameState.timeLeft
     });
-    
-    // Show visual feedback while waiting for server response
-    // Server will send back the correct answer
-    setTimeout(() => {
-        // Simulate feedback (server will handle actual logic)
-        // This is just for immediate visual feedback
-    }, 100);
 }
 
 // Show Eliminated Page
@@ -340,6 +563,7 @@ function resetGame() {
     }
     
     gameState = {
+        sessionId: null,
         player: {
             firstName: '',
             lastName: '',
@@ -351,7 +575,8 @@ function resetGame() {
         correctAnswers: 0,
         timer: null,
         timeLeft: 15,
-        isConnected: socket.connected
+        isConnected: socket.connected,
+        playerStatus: 'not-registered'
     };
     
     showPage('registration');

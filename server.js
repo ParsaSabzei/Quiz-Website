@@ -3,26 +3,65 @@ const http = require('http');
 const socketIO = require('socket.io');
 const cors = require('cors');
 const path = require('path');
+const compression = require('compression');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
 const app = express();
 const server = http.createServer(app);
+
+// Optimized Socket.IO configuration for 300 concurrent users
 const io = socketIO(server, {
     cors: {
         origin: "*",
         methods: ["GET", "POST"]
+    },
+    // Performance optimizations
+    pingTimeout: 10000,
+    pingInterval: 5000,
+    upgradeTimeout: 10000,
+    maxHttpBufferSize: 1e6, // 1MB
+    transports: ['websocket', 'polling'],
+    allowUpgrades: true,
+    perMessageDeflate: {
+        threshold: 1024
     }
 });
 
-// Middleware
+// Security & Performance Middleware
+app.use(helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false
+}));
+app.use(compression()); // Gzip compression
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '100kb' }));
+
+// Rate limiting
+const limiter = rateLimit({
+    windowMs: 1000, // 1 second
+    max: 20, // max 20 requests per second per IP
+    message: 'درخواست‌های زیادی ارسال شده است. لطفاً کمی صبر کنید.'
+});
+app.use('/api', limiter);
+
 app.use(express.static(path.join(__dirname)));
+
+// Performance monitoring (silent)
+setInterval(() => {
+    // Monitor server health silently
+}, 30000);
 
 // Game State
 const gameState = {
     status: 'waiting', // waiting, playing, finished
     players: new Map(), // socketId -> player data
+    playerSessions: new Map(), // sessionId -> player data (for reconnection)
+    registeredStudentIds: new Set(), // Track all student IDs that have ever registered
+    eliminatedStudentIds: new Set(), // Track eliminated student IDs to prevent rejoin
     currentQuestionIndex: 0,
+    currentQuestionStartTime: null, // When the current question was sent
+    currentQuestionTimeLimit: null, // Time limit for current question in seconds
     questions: [
         {
             id: 1,
@@ -190,39 +229,59 @@ app.get('/api/winners', (req, res) => {
 
 // Socket.IO Connection
 io.on('connection', (socket) => {
-    console.log(`New connection: ${socket.id}`);
-
     // Admin Connection
     socket.on('admin-connect', () => {
-        console.log(`Admin connected: ${socket.id}`);
         adminSockets.add(socket.id);
         
-        // Send current game state to admin
+        // Send current game state to admin (only top 20 + winners)
         socket.emit('game-state-update', {
             status: gameState.status,
             playerCount: gameState.players.size,
             currentQuestion: gameState.currentQuestionIndex,
             totalQuestions: gameState.questions.length,
-            players: Array.from(gameState.players.values()).map(p => ({
-                socketId: p.socketId,
-                firstName: p.firstName,
-                lastName: p.lastName,
-                studentId: p.studentId,
-                status: p.status,
-                correctAnswers: p.correctAnswers
-            })),
+            players: getTopPlayersForAdmin(),
             winners: gameState.winners,
-            eliminated: gameState.eliminated
+            eliminated: [] // Don't send eliminated list to reduce load
         });
     });
 
     // Player Registration
     socket.on('player-register', (data) => {
-        const { firstName, lastName, studentId } = data;
+        const { sessionId, firstName, lastName, studentId } = data;
         
-        console.log(`Player registered: ${firstName} ${lastName} (${studentId})`);
+        // Check if game has already started
+        if (gameState.status === 'playing' || gameState.status === 'finished') {
+            socket.emit('registration-failed', {
+                message: 'مسابقه قبلاً شروع شده است. امکان ورود جدید وجود ندارد',
+                reason: 'game-started'
+            });
+            return;
+        }
+        
+        // Check if student ID has already been registered (but not by this session)
+        if (gameState.registeredStudentIds.has(studentId)) {
+            // Check if this is a reconnection attempt with valid session
+            const existingSession = gameState.playerSessions.get(sessionId);
+            if (!existingSession || existingSession.studentId !== studentId) {
+                socket.emit('registration-failed', {
+                    message: 'این شماره دانشجویی قبلاً ثبت نام کرده است',
+                    reason: 'duplicate-id'
+                });
+                return;
+            }
+        }
+        
+        // Check if student has been eliminated and trying to rejoin
+        if (gameState.eliminatedStudentIds.has(studentId)) {
+            socket.emit('registration-failed', {
+                message: 'شما از مسابقه حذف شده‌اید و امکان بازگشت وجود ندارد',
+                reason: 'eliminated'
+            });
+            return;
+        }
         
         const player = {
+            sessionId,
             socketId: socket.id,
             firstName,
             lastName,
@@ -233,10 +292,17 @@ io.on('connection', (socket) => {
             joinedAt: new Date()
         };
         
+        // Join the active-players room for efficient broadcasting
+        socket.join('active-players');
+        
         gameState.players.set(socket.id, player);
+        gameState.playerSessions.set(sessionId, player);
+        gameState.registeredStudentIds.add(studentId);
         
         // Notify player
         socket.emit('registration-success', {
+            sessionId: sessionId,
+            status: player.status,
             message: 'ثبت نام موفقیت‌آمیز بود',
             gameStatus: gameState.status
         });
@@ -255,6 +321,86 @@ io.on('connection', (socket) => {
         });
     });
 
+    // Player Reconnection
+    socket.on('player-reconnect', (data) => {
+        const { sessionId, studentId, firstName, lastName } = data;
+        
+        // Check if session exists
+        const sessionPlayer = gameState.playerSessions.get(sessionId);
+        
+        if (!sessionPlayer) {
+            socket.emit('reconnect-failed', {
+                message: 'جلسه معتبر نیست. لطفاً دوباره ثبت‌نام کنید',
+                reason: 'invalid-session'
+            });
+            return;
+        }
+        
+        // Verify student ID matches
+        if (sessionPlayer.studentId !== studentId) {
+            socket.emit('reconnect-failed', {
+                message: 'اطلاعات جلسه با شماره دانشجویی مطابقت ندارد',
+                reason: 'session-mismatch'
+            });
+            return;
+        }
+        
+        // Update socket ID
+        const oldSocketId = sessionPlayer.socketId;
+        sessionPlayer.socketId = socket.id;
+        
+        // Remove old socket reference and add new one
+        if (gameState.players.has(oldSocketId)) {
+            gameState.players.delete(oldSocketId);
+        }
+        gameState.players.set(socket.id, sessionPlayer);
+        
+        // Rejoin the active-players room
+        if (sessionPlayer.status === 'playing' || sessionPlayer.status === 'waiting') {
+            socket.join('active-players');
+        }
+        
+        // Prepare reconnection response
+        const response = {
+            status: sessionPlayer.status,
+            correctAnswers: sessionPlayer.correctAnswers,
+            message: 'اتصال مجدد موفقیت‌آمیز بود'
+        };
+        
+        // If game is playing, send current question with remaining time
+        if (gameState.status === 'playing' && sessionPlayer.status === 'playing') {
+            const question = gameState.questions[gameState.currentQuestionIndex];
+            if (question && gameState.currentQuestionStartTime) {
+                // Calculate time remaining
+                const now = Date.now();
+                const elapsed = Math.floor((now - gameState.currentQuestionStartTime) / 1000);
+                const timeRemaining = Math.max(0, (gameState.currentQuestionTimeLimit || question.timeLimit) - elapsed);
+                
+                response.currentQuestion = {
+                    id: question.id,
+                    text: question.text,
+                    options: question.options,
+                    timeLimit: question.timeLimit,
+                    timeRemaining: timeRemaining // Time left in seconds
+                };
+                response.questionNumber = gameState.currentQuestionIndex + 1;
+                response.totalQuestions = gameState.questions.length;
+            }
+        }
+        
+        socket.emit('reconnect-success', response);
+        
+        // Update admins
+        broadcastToAdmins('player-reconnected', {
+            player: {
+                firstName: sessionPlayer.firstName,
+                lastName: sessionPlayer.lastName,
+                studentId: sessionPlayer.studentId,
+                status: sessionPlayer.status
+            }
+        });
+    });
+
     // Admin Start Game
     socket.on('admin-start-game', () => {
         if (!adminSockets.has(socket.id)) {
@@ -266,8 +412,6 @@ io.on('connection', (socket) => {
             socket.emit('error', { message: 'بازی در حال انجام است' });
             return;
         }
-
-        console.log('Admin started the game');
         
         gameState.status = 'playing';
         gameState.currentQuestionIndex = 0;
@@ -282,8 +426,8 @@ io.on('connection', (socket) => {
             player.hasAnswered = false;
         });
         
-        // Notify all players to start
-        io.emit('game-started', {
+        // Notify all players to start using room broadcast (OPTIMIZED)
+        io.to('active-players').emit('game-started', {
             message: 'بازی شروع شد!',
             totalQuestions: gameState.questions.length
         });
@@ -291,7 +435,7 @@ io.on('connection', (socket) => {
         // Send first question after a short delay
         setTimeout(() => {
             sendQuestion();
-        }, 2000);
+        }, 500); // Reduced from 2000ms to 500ms
         
         // Update admins
         broadcastToAdmins('game-started', {
@@ -300,7 +444,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Player Answer
+    // Player Answer (allow changes until timer ends)
     socket.on('player-answer', (data) => {
         const { questionId, answerIndex, timeRemaining } = data;
         const player = gameState.players.get(socket.id);
@@ -314,66 +458,30 @@ io.on('connection', (socket) => {
         if (!question || question.id !== questionId) {
             return;
         }
-        
         const isCorrect = answerIndex === question.correctAnswer;
         
-        console.log(`Player ${player.firstName} answered question ${questionId}: ${isCorrect ? 'Correct' : 'Wrong'}`);
+        // Store/overwrite current answer (no immediate reveal)
+        player.currentAnswer = answerIndex;
+        player.isCurrentAnswerCorrect = isCorrect;
         
-        if (isCorrect) {
-            player.correctAnswers++;
-            player.hasAnswered = true;
-            
-            // Notify player
-            socket.emit('answer-result', {
-                correct: true,
-                correctAnswer: question.correctAnswer
-            });
-            
-            // Check if all active players have answered
-            checkIfAllPlayersAnswered();
-        } else {
-            // Player eliminated
-            player.status = 'eliminated';
-            player.hasAnswered = true;
-            gameState.eliminated.push({
+        // Acknowledge that answer was received (but don't reveal if correct or not)
+        socket.emit('answer-submitted', {
+            message: 'پاسخ شما ثبت شد'
+        });
+        
+        // Update admins
+        broadcastToAdmins('player-answered', {
+            player: {
                 firstName: player.firstName,
                 lastName: player.lastName,
-                studentId: player.studentId,
-                correctAnswers: player.correctAnswers,
-                eliminatedAt: new Date(),
-                eliminatedAtQuestion: gameState.currentQuestionIndex + 1
-            });
-            
-            // Notify player
-            socket.emit('answer-result', {
-                correct: false,
-                correctAnswer: question.correctAnswer,
-                eliminated: true
-            });
-            
-            socket.emit('player-eliminated', {
-                correctAnswers: player.correctAnswers,
-                totalQuestions: gameState.questions.length
-            });
-            
-            // Update admins
-            broadcastToAdmins('player-eliminated', {
-                player: {
-                    firstName: player.firstName,
-                    lastName: player.lastName,
-                    studentId: player.studentId,
-                    correctAnswers: player.correctAnswers,
-                    eliminatedAtQuestion: gameState.currentQuestionIndex + 1
-                },
-                remainingPlayers: Array.from(gameState.players.values()).filter(p => p.status === 'playing').length
-            });
-            
-            // Check if all active players have answered
-            checkIfAllPlayersAnswered();
-        }
+                studentId: player.studentId
+            },
+            answeredCount: Array.from(gameState.players.values()).filter(p => p.status === 'playing' && p.currentAnswer !== undefined && p.currentAnswer !== null).length,
+            totalPlayers: Array.from(gameState.players.values()).filter(p => p.status === 'playing').length
+        });
     });
 
-    // Player Timeout
+    // Player Timeout (when time runs out)
     socket.on('player-timeout', (data) => {
         const { questionId } = data;
         const player = gameState.players.get(socket.id);
@@ -382,45 +490,19 @@ io.on('connection', (socket) => {
             return;
         }
         
-        if (player.hasAnswered) {
-            return; // Player already answered
+        const question = gameState.questions[gameState.currentQuestionIndex];
+        if (!question || question.id !== questionId) {
+            return;
         }
         
-        console.log(`Player ${player.firstName} timed out on question ${questionId}`);
+        // If player didn't answer, mark as timeout
+        if (!player.hasAnswered) {
+            player.hasAnswered = true;
+            player.currentAnswer = -1; // No answer
+            player.isCurrentAnswerCorrect = false;
+        }
         
-        // Player eliminated due to timeout
-        player.status = 'eliminated';
-        player.hasAnswered = true;
-        gameState.eliminated.push({
-            firstName: player.firstName,
-            lastName: player.lastName,
-            studentId: player.studentId,
-            correctAnswers: player.correctAnswers,
-            eliminatedAt: new Date(),
-            eliminatedAtQuestion: gameState.currentQuestionIndex + 1,
-            reason: 'timeout'
-        });
-        
-        socket.emit('player-eliminated', {
-            correctAnswers: player.correctAnswers,
-            totalQuestions: gameState.questions.length,
-            reason: 'timeout'
-        });
-        
-        // Update admins
-        broadcastToAdmins('player-eliminated', {
-            player: {
-                firstName: player.firstName,
-                lastName: player.lastName,
-                studentId: player.studentId,
-                correctAnswers: player.correctAnswers,
-                eliminatedAtQuestion: gameState.currentQuestionIndex + 1
-            },
-            reason: 'timeout',
-            remainingPlayers: Array.from(gameState.players.values()).filter(p => p.status === 'playing').length
-        });
-        
-        // Check if all active players have answered
+        // Check if all players have finished (answered or timed out)
         checkIfAllPlayersAnswered();
     });
 
@@ -441,51 +523,48 @@ io.on('connection', (socket) => {
             return;
         }
         
-        console.log('Admin reset the game');
         resetGame();
         
+        // Broadcast to all connected sockets
         io.emit('game-reset', {
             message: 'بازی ریست شد'
         });
         
-        // Send updated game state to all admins with current players
+        // Send updated game state to all admins (only top 20 + winners)
         broadcastToAdmins('game-state-update', {
             status: gameState.status,
             playerCount: gameState.players.size,
             currentQuestion: gameState.currentQuestionIndex,
             totalQuestions: gameState.questions.length,
-            players: Array.from(gameState.players.values()).map(p => ({
-                socketId: p.socketId,
-                firstName: p.firstName,
-                lastName: p.lastName,
-                studentId: p.studentId,
-                status: p.status,
-                correctAnswers: p.correctAnswers
-            })),
+            players: getTopPlayersForAdmin(),
             winners: gameState.winners,
-            eliminated: gameState.eliminated
+            eliminated: [] // Don't send eliminated list
         });
     });
 
     // Disconnect
-    socket.on('disconnect', () => {
-        console.log(`Disconnected: ${socket.id}`);
+    socket.on('disconnect', (reason) => {
+        // Leave all rooms
+        socket.leave('active-players');
         
         // Remove from admin list
         adminSockets.delete(socket.id);
         
-        // Remove player
+        // Handle player disconnect
         const player = gameState.players.get(socket.id);
         if (player) {
+            // Don't remove player from game state immediately
+            // Keep them in playerSessions so they can reconnect
+            // Only remove from active players map
             gameState.players.delete(socket.id);
-            console.log(`Player left: ${player.firstName} ${player.lastName}`);
             
             // Update admins
-            broadcastToAdmins('player-left', {
+            broadcastToAdmins('player-disconnected', {
                 player: {
                     firstName: player.firstName,
                     lastName: player.lastName,
-                    studentId: player.studentId
+                    studentId: player.studentId,
+                    status: player.status
                 },
                 totalPlayers: gameState.players.size
             });
@@ -494,31 +573,111 @@ io.on('connection', (socket) => {
 });
 
 // Helper Functions
+function getTopPlayersForAdmin() {
+    // Get ALL players (including eliminated) from both active players and sessions
+    const allPlayersMap = new Map();
+    
+    // Add active players
+    gameState.players.forEach((player, socketId) => {
+        allPlayersMap.set(player.studentId, player);
+    });
+    
+    // Add players from sessions (in case they're disconnected)
+    gameState.playerSessions.forEach((player, sessionId) => {
+        if (!allPlayersMap.has(player.studentId)) {
+            allPlayersMap.set(player.studentId, player);
+        }
+    });
+    
+    // Convert to array and sort by correctAnswers (descending)
+    const allPlayers = Array.from(allPlayersMap.values())
+        .sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0))
+        .slice(0, 20) // Top 20 only
+        .map(p => ({
+            socketId: p.socketId,
+            firstName: p.firstName,
+            lastName: p.lastName,
+            studentId: p.studentId,
+            status: p.status,
+            correctAnswers: p.correctAnswers
+        }));
+    
+    return allPlayers;
+}
+
 function checkIfAllPlayersAnswered() {
+    // With synchronized reveal at timeout, we only log progress here.
     const activePlayers = Array.from(gameState.players.values()).filter(p => p.status === 'playing');
-    const answeredPlayers = activePlayers.filter(p => p.hasAnswered);
+    const answeredPlayers = activePlayers.filter(p => p.currentAnswer !== undefined && p.currentAnswer !== null);
+}
+
+function revealQuestionResults() {
+    const question = gameState.questions[gameState.currentQuestionIndex];
+    if (!question) return;
     
-    console.log(`Players answered: ${answeredPlayers.length}/${activePlayers.length}`);
+    const activePlayers = Array.from(gameState.players.values()).filter(p => p.status === 'playing');
     
-    if (activePlayers.length === 0) {
-        endGame();
-        return;
-    }
-    
-    // If all active players have answered, move to next question
-    if (answeredPlayers.length === activePlayers.length) {
-        console.log('All players answered, moving to next question...');
+    activePlayers.forEach(player => {
+        const hasAnswer = player.currentAnswer !== undefined && player.currentAnswer !== null && player.currentAnswer !== -1;
+        const isCorrect = !!player.isCurrentAnswerCorrect && hasAnswer;
         
-        // Reset hasAnswered flag for next question
-        gameState.players.forEach(player => {
-            player.hasAnswered = false;
-        });
+        if (isCorrect) {
+            // Player answered correctly
+            player.correctAnswers++;
+            
+            io.to(player.socketId).emit('answer-result', {
+                correct: true,
+                correctAnswer: question.correctAnswer,
+                yourAnswer: player.currentAnswer
+            });
+        } else {
+            // Player answered incorrectly or didn't answer - eliminate
+            player.status = 'eliminated';
+            gameState.eliminatedStudentIds.add(player.studentId);
+            
+            const eliminationReason = player.currentAnswer === -1 ? 'timeout' : 'wrong_answer';
+            
+            gameState.eliminated.push({
+                firstName: player.firstName,
+                lastName: player.lastName,
+                studentId: player.studentId,
+                correctAnswers: player.correctAnswers,
+                eliminatedAt: new Date(),
+                eliminatedAtQuestion: gameState.currentQuestionIndex + 1,
+                reason: eliminationReason
+            });
+            
+            io.to(player.socketId).emit('answer-result', {
+                correct: false,
+                correctAnswer: question.correctAnswer,
+                yourAnswer: player.currentAnswer,
+                eliminated: true
+            });
+            
+            io.to(player.socketId).emit('player-eliminated', {
+                correctAnswers: player.correctAnswers,
+                totalQuestions: gameState.questions.length,
+                reason: eliminationReason
+            });
+            
+            // Update admins
+            broadcastToAdmins('player-eliminated', {
+                player: {
+                    firstName: player.firstName,
+                    lastName: player.lastName,
+                    studentId: player.studentId,
+                    correctAnswers: player.correctAnswers,
+                    eliminatedAtQuestion: gameState.currentQuestionIndex + 1
+                },
+                reason: eliminationReason,
+                remainingPlayers: Array.from(gameState.players.values()).filter(p => p.status === 'playing').length
+            });
+        }
         
-        // Wait a bit before sending next question
-        setTimeout(() => {
-            moveToNextQuestion();
-        }, 3000); // 3 seconds delay
-    }
+        // Reset for next question
+        player.currentAnswer = null;
+        player.isCurrentAnswerCorrect = null;
+    });
 }
 
 function sendQuestion() {
@@ -537,22 +696,41 @@ function sendQuestion() {
         return;
     }
     
-    console.log(`Sending question ${gameState.currentQuestionIndex + 1} to ${activePlayers.length} players`);
+    // Record when this question was sent
+    gameState.currentQuestionStartTime = Date.now();
+    gameState.currentQuestionTimeLimit = question.timeLimit;
     
-    // Send question to all active players
-    activePlayers.forEach(player => {
-        io.to(player.socketId).emit('new-question', {
-            questionNumber: gameState.currentQuestionIndex + 1,
-            totalQuestions: gameState.questions.length,
-            question: {
-                id: question.id,
-                text: question.text,
-                options: question.options,
-                timeLimit: question.timeLimit
-            }
-        });
+    // Clear any existing per-player temp state
+    gameState.players.forEach(p => {
+        if (p.status === 'playing') {
+            p.currentAnswer = null;
+            p.isCurrentAnswerCorrect = null;
+        }
+    });
+
+    // Send question to all active players using room broadcast (OPTIMIZED for 300+ users)
+    io.to('active-players').emit('new-question', {
+        questionNumber: gameState.currentQuestionIndex + 1,
+        totalQuestions: gameState.questions.length,
+        question: {
+            id: question.id,
+            text: question.text,
+            options: question.options,
+            timeLimit: question.timeLimit
+        }
     });
     
+    // Schedule reveal at timeout (synchronized)
+    if (gameState.questionTimer) {
+        clearTimeout(gameState.questionTimer);
+    }
+    gameState.questionTimer = setTimeout(() => {
+        revealQuestionResults();
+        setTimeout(() => {
+            moveToNextQuestion();
+        }, 1500); // Reduced from 3000ms to 1500ms for faster progression
+    }, (question.timeLimit || 15) * 1000);
+
     // Update admins
     broadcastToAdmins('question-sent', {
         questionNumber: gameState.currentQuestionIndex + 1,
@@ -562,6 +740,11 @@ function sendQuestion() {
 }
 
 function moveToNextQuestion() {
+    // Clear any running timer before moving on
+    if (gameState.questionTimer) {
+        clearTimeout(gameState.questionTimer);
+        gameState.questionTimer = null;
+    }
     gameState.currentQuestionIndex++;
     
     if (gameState.currentQuestionIndex >= gameState.questions.length) {
@@ -572,13 +755,15 @@ function moveToNextQuestion() {
     // Wait a bit before sending next question
     setTimeout(() => {
         sendQuestion();
-    }, 1000);
+    }, 300); // Reduced from 1000ms to 300ms for faster question transitions
 }
 
 function endGame() {
-    console.log('Game ended');
-    
     gameState.status = 'finished';
+    if (gameState.questionTimer) {
+        clearTimeout(gameState.questionTimer);
+        gameState.questionTimer = null;
+    }
     
     // Find winners (players who answered all questions correctly)
     gameState.winners = Array.from(gameState.players.values())
@@ -590,8 +775,6 @@ function endGame() {
             correctAnswers: p.correctAnswers,
             finishedAt: new Date()
         }));
-    
-    console.log(`Winners: ${gameState.winners.length}`);
     
     // Notify winners
     gameState.winners.forEach(winner => {
@@ -610,12 +793,12 @@ function endGame() {
     // Notify admins
     broadcastToAdmins('game-ended', {
         winners: gameState.winners,
-        eliminated: gameState.eliminated,
+        eliminated: [], // Don't send eliminated list
         totalPlayers: gameState.players.size
     });
     
-    // Notify all players
-    io.emit('game-finished', {
+    // Notify all players using room broadcast (OPTIMIZED)
+    io.to('active-players').emit('game-finished', {
         message: 'بازی به پایان رسید',
         winnersCount: gameState.winners.length
     });
@@ -624,14 +807,30 @@ function endGame() {
 function resetGame() {
     gameState.status = 'waiting';
     
-    // Keep players but reset their status
+    // Reset all players to waiting status (keep sessions and registrations)
     gameState.players.forEach(player => {
         player.status = 'waiting';
         player.correctAnswers = 0;
         player.hasAnswered = false;
+        player.currentAnswer = null;
+        player.isCurrentAnswerCorrect = null;
     });
     
+    // Reset all player sessions to waiting status
+    gameState.playerSessions.forEach(player => {
+        player.status = 'waiting';
+        player.correctAnswers = 0;
+        player.hasAnswered = false;
+        player.currentAnswer = null;
+        player.isCurrentAnswerCorrect = null;
+    });
+    
+    // Clear eliminated IDs to allow them to play again
+    gameState.eliminatedStudentIds.clear();
+    
     gameState.currentQuestionIndex = 0;
+    gameState.currentQuestionStartTime = null;
+    gameState.currentQuestionTimeLimit = null;
     gameState.winners = [];
     gameState.eliminated = [];
     gameState.startTime = null;

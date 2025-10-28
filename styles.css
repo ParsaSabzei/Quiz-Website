@@ -85,7 +85,7 @@ body {
     display: none;
     min-height: 100vh;
     padding: 20px;
-    animation: fadeIn 0.5s ease-in-out;
+    animation: fadeIn 0.2s ease-in-out; /* Reduced from 0.5s to 0.2s for faster transitions */
 }
 
 .page.active {
@@ -488,13 +488,13 @@ body {
     text-align: right;
     position: relative;
     overflow: hidden;
-    animation: option-appear 0.5s ease-out backwards;
+    animation: option-appear 0.2s ease-out backwards; /* Reduced from 0.5s to 0.2s */
 }
 
-.option:nth-child(1) { animation-delay: 0.1s; }
-.option:nth-child(2) { animation-delay: 0.2s; }
-.option:nth-child(3) { animation-delay: 0.3s; }
-.option:nth-child(4) { animation-delay: 0.4s; }
+.option:nth-child(1) { animation-delay: 0.05s; }
+.option:nth-child(2) { animation-delay: 0.10s; }
+.option:nth-child(3) { animation-delay: 0.15s; }
+.option:nth-child(4) { animation-delay: 0.20s; }
 
 @keyframes option-appear {
     from {
