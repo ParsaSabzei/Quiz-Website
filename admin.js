@@ -259,7 +259,8 @@ function updateGameStatus() {
 }
 
 function updateStats() {
-    const activePlayers = gameState.players.filter(p => p.status === 'playing').length;
+    // Count players who are NOT eliminated (includes 'waiting', 'playing', and 'winner')
+    const activePlayers = gameState.players.filter(p => p.status !== 'eliminated').length;
     
     elements.totalPlayers.textContent = gameState.players.length;
     elements.activePlayers.textContent = activePlayers;
