@@ -355,8 +355,8 @@ io.on('connection', (socket) => {
         }
         gameState.players.set(socket.id, sessionPlayer);
         
-        // Rejoin the active-players room
-        if (sessionPlayer.status === 'playing' || sessionPlayer.status === 'waiting') {
+        // Rejoin the active-players room (only if not eliminated)
+        if (sessionPlayer.status !== 'eliminated') {
             socket.join('active-players');
         }
         
@@ -624,6 +624,12 @@ function revealQuestionResults() {
                 reason: eliminationReason
             });
             
+            // Remove player from active-players room so they don't receive future questions
+            const playerSocket = io.sockets.sockets.get(player.socketId);
+            if (playerSocket) {
+                playerSocket.leave('active-players');
+            }
+            
             io.to(player.socketId).emit('answer-result', {
                 correct: false,
                 correctAnswer: question.correctAnswer,
@@ -781,13 +787,19 @@ function endGame() {
 function resetGame() {
     gameState.status = 'waiting';
     
-    // Reset all players to waiting status (keep sessions and registrations)
+    // Reset all players to waiting status and rejoin active-players room
     gameState.players.forEach(player => {
         player.status = 'waiting';
         player.correctAnswers = 0;
         player.hasAnswered = false;
         player.currentAnswer = null;
         player.isCurrentAnswerCorrect = null;
+        
+        // Rejoin active-players room (in case they were eliminated and removed)
+        const playerSocket = io.sockets.sockets.get(player.socketId);
+        if (playerSocket) {
+            playerSocket.join('active-players');
+        }
     });
     
     // Reset all player sessions to waiting status
