@@ -395,134 +395,42 @@ function showQuestion() {
         optionsContainer.appendChild(optionEl);
     });
     
-    // Start timer
-    startTimer(question.timeLimit || 15);
+    // Hide timer - admin controls timing now
+    const timerContainer = document.getElementById('timer');
+    const timerEl = document.getElementById('timeLeft');
+    timerContainer.style.display = 'none';
 }
 
 // Show Question with Specific Time Remaining (for reconnection)
 function showQuestionWithTimeRemaining(timeRemaining) {
-    const question = gameState.currentQuestion;
-    
-    if (!question) {
-        console.error('No question data');
-        return;
-    }
-    
-    // Stop any existing timer
-    if (gameState.timer) {
-        clearInterval(gameState.timer);
-    }
-    
-    // Update question counter
-    document.querySelector('.current-question').textContent = gameState.currentQuestionNumber;
-    document.querySelector('.total-questions').textContent = gameState.totalQuestions;
-    
-    // Update progress bar
-    const progress = ((gameState.currentQuestionNumber - 1) / gameState.totalQuestions) * 100;
-    document.getElementById('progressFill').style.width = `${progress}%`;
-    
-    // Show question text
-    const questionTextEl = document.getElementById('questionText');
-    questionTextEl.textContent = question.text;
-    
-    // Trigger animation by removing and re-adding the question card
-    const questionCard = document.getElementById('questionCard');
-    questionCard.style.animation = 'none';
-    setTimeout(() => {
-        questionCard.style.animation = 'slide-in 0.3s ease-out'; // Reduced from 0.5s to 0.3s
-    }, 10);
-    
-    // Show options
-    const optionsContainer = document.getElementById('optionsContainer');
-    optionsContainer.innerHTML = '';
-    
-    question.options.forEach((option, index) => {
-        const optionEl = document.createElement('div');
-        optionEl.className = 'option';
-        optionEl.textContent = option;
-        optionEl.dataset.index = index;
-        optionEl.addEventListener('click', () => handleAnswer(index));
-        optionsContainer.appendChild(optionEl);
-    });
-    
-    // Start timer with remaining time
-    console.log(`Starting timer with ${timeRemaining}s remaining`);
-    startTimer(timeRemaining);
+    // No timer anymore, just show the question normally
+    showQuestion();
 }
 
-// Start Timer
-function startTimer(timeLimit) {
-    gameState.timeLeft = timeLimit;
-    const timerEl = document.getElementById('timeLeft');
-    const timerContainer = document.getElementById('timer');
-    
-    timerEl.textContent = gameState.timeLeft;
-    timerContainer.classList.remove('warning');
-    
-    if (gameState.timer) {
-        clearInterval(gameState.timer);
-    }
-    
-    gameState.timer = setInterval(() => {
-        gameState.timeLeft--;
-        timerEl.textContent = gameState.timeLeft;
-        
-        if (gameState.timeLeft <= 5) {
-            timerContainer.classList.add('warning');
-        }
-        
-        if (gameState.timeLeft <= 0) {
-            clearInterval(gameState.timer);
-            handleTimeout();
-        }
-    }, 1000);
-}
-
-// Handle Timeout
-function handleTimeout() {
-    const question = gameState.currentQuestion;
-    
-    if (!question) {
-        return;
-    }
-    
-    console.log('⏰ Time is up!');
-    
-    // Disable all options at timeout
-    const options = document.querySelectorAll('.option');
-    options.forEach(opt => opt.classList.add('disabled'));
-    
-    // Notify server about timeout
-    socket.emit('player-timeout', {
-        questionId: question.id
-    });
-    
-    console.log('⏳ Waiting for results...');
-}
+// Timer functions removed - admin now controls progression manually
 
 // Handle Answer
 function handleAnswer(selectedIndex) {
     const question = gameState.currentQuestion;
     const options = document.querySelectorAll('.option');
     
-    // Ignore clicks after timeout
-    if (gameState.timeLeft <= 0) {
+    // Check if already answered (results shown)
+    if (options[0].classList.contains('disabled')) {
         return;
     }
     
     // Reset selection UI
     options.forEach(opt => opt.classList.remove('selected'));
     
-    // Mark selected option (but keep others clickable until timeout)
+    // Mark selected option (can change until admin moves to next question)
     options[selectedIndex].classList.add('selected');
     
-    console.log(`🎯 Selected option ${selectedIndex}, you can still change until time is up...`);
+    console.log(`🎯 Selected option ${selectedIndex}, you can still change...`);
     
     // Send current selection to server (overwrites previous selection)
     socket.emit('player-answer', {
         questionId: question.id,
-        answerIndex: selectedIndex,
-        timeRemaining: gameState.timeLeft
+        answerIndex: selectedIndex
     });
 }
 

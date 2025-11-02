@@ -195,13 +195,13 @@ socket.on('game-ended', (data) => {
 
 socket.on('game-reset', (data) => {
     console.log('Game reset');
-    // Don't clear players here - wait for game-state-update from server
+    // Clear game state completely
     gameState.status = 'waiting';
     gameState.winners = [];
     gameState.eliminated = [];
     gameState.currentQuestion = 0;
-    updateButtons(); // Update buttons immediately after reset
-    // Full updateUI will be called when game-state-update arrives
+    // Update UI immediately to show empty rankings and winners
+    updateUI();
 });
 
 socket.on('error', (data) => {
@@ -259,7 +259,8 @@ function updateGameStatus() {
 }
 
 function updateStats() {
-    const activePlayers = gameState.players.filter(p => p.status === 'playing').length;
+    // Count players who are NOT eliminated (includes 'waiting', 'playing', and 'winner')
+    const activePlayers = gameState.players.filter(p => p.status !== 'eliminated').length;
     
     elements.totalPlayers.textContent = gameState.players.length;
     elements.activePlayers.textContent = activePlayers;
@@ -268,6 +269,18 @@ function updateStats() {
 }
 
 function updatePlayersList() {
+    // If game is in waiting status, show empty state (rankings only show during/after game)
+    if (gameState.status === 'waiting') {
+        elements.activePlayersBadge.textContent = 0;
+        elements.activePlayersList.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-state-icon">📊</div>
+                <p>رنک‌بندی پس از شروع بازی نمایش داده می‌شود</p>
+            </div>
+        `;
+        return;
+    }
+    
     // Get all players (including eliminated) and sort by correctAnswers
     const allPlayers = gameState.players;
     const sortedPlayers = [...allPlayers].sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0));
@@ -318,11 +331,16 @@ function updateWinnersList() {
     
     elements.winnersBadge.textContent = gameState.winners.length;
     
+    // Always show empty state if no winners (whether waiting, playing, or finished)
     if (gameState.winners.length === 0) {
+        const emptyMessage = gameState.status === 'waiting' 
+            ? 'برنده‌ها پس از پایان بازی نمایش داده می‌شوند'
+            : 'هنوز برنده‌ای نداریم';
+        
         elements.winnersList.innerHTML = `
             <div class="empty-state">
                 <div class="empty-state-icon">🏆</div>
-                <p>هنوز برنده‌ای نداریم</p>
+                <p>${emptyMessage}</p>
             </div>
         `;
         return;

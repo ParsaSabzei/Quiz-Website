@@ -355,8 +355,8 @@ io.on('connection', (socket) => {
         }
         gameState.players.set(socket.id, sessionPlayer);
         
-        // Rejoin the active-players room
-        if (sessionPlayer.status === 'playing' || sessionPlayer.status === 'waiting') {
+        // Rejoin the active-players room (only if not eliminated)
+        if (sessionPlayer.status !== 'eliminated') {
             socket.join('active-players');
         }
         
@@ -481,30 +481,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Player Timeout (when time runs out)
-    socket.on('player-timeout', (data) => {
-        const { questionId } = data;
-        const player = gameState.players.get(socket.id);
-        
-        if (!player || player.status !== 'playing') {
-            return;
-        }
-        
-        const question = gameState.questions[gameState.currentQuestionIndex];
-        if (!question || question.id !== questionId) {
-            return;
-        }
-        
-        // If player didn't answer, mark as timeout
-        if (!player.hasAnswered) {
-            player.hasAnswered = true;
-            player.currentAnswer = -1; // No answer
-            player.isCurrentAnswerCorrect = false;
-        }
-        
-        // Check if all players have finished (answered or timed out)
-        checkIfAllPlayersAnswered();
-    });
+    // Player Timeout event removed - no automatic timeout anymore
 
     // Admin Next Question
     socket.on('admin-next-question', () => {
@@ -647,6 +624,12 @@ function revealQuestionResults() {
                 reason: eliminationReason
             });
             
+            // Remove player from active-players room so they don't receive future questions
+            const playerSocket = io.sockets.sockets.get(player.socketId);
+            if (playerSocket) {
+                playerSocket.leave('active-players');
+            }
+            
             io.to(player.socketId).emit('answer-result', {
                 correct: false,
                 correctAnswer: question.correctAnswer,
@@ -709,6 +692,7 @@ function sendQuestion() {
     });
 
     // Send question to all active players using room broadcast (OPTIMIZED for 300+ users)
+    // Note: No timer included - admin controls progression manually
     io.to('active-players').emit('new-question', {
         questionNumber: gameState.currentQuestionIndex + 1,
         totalQuestions: gameState.questions.length,
@@ -716,20 +700,11 @@ function sendQuestion() {
             id: question.id,
             text: question.text,
             options: question.options,
-            timeLimit: question.timeLimit
+            timeLimit: null // No time limit - admin controlled
         }
     });
     
-    // Schedule reveal at timeout (synchronized)
-    if (gameState.questionTimer) {
-        clearTimeout(gameState.questionTimer);
-    }
-    gameState.questionTimer = setTimeout(() => {
-        revealQuestionResults();
-        setTimeout(() => {
-            moveToNextQuestion();
-        }, 1500); // Reduced from 3000ms to 1500ms for faster progression
-    }, (question.timeLimit || 15) * 1000);
+    // No automatic timer - admin will manually trigger next question
 
     // Update admins
     broadcastToAdmins('question-sent', {
@@ -745,6 +720,11 @@ function moveToNextQuestion() {
         clearTimeout(gameState.questionTimer);
         gameState.questionTimer = null;
     }
+    
+    // First, reveal results of current question
+    revealQuestionResults();
+    
+    // Then move to next question
     gameState.currentQuestionIndex++;
     
     if (gameState.currentQuestionIndex >= gameState.questions.length) {
@@ -752,10 +732,10 @@ function moveToNextQuestion() {
         return;
     }
     
-    // Wait a bit before sending next question
+    // Wait a bit before sending next question (to show results)
     setTimeout(() => {
         sendQuestion();
-    }, 300); // Reduced from 1000ms to 300ms for faster question transitions
+    }, 2000); // Give players 2 seconds to see the results
 }
 
 function endGame() {
@@ -807,13 +787,19 @@ function endGame() {
 function resetGame() {
     gameState.status = 'waiting';
     
-    // Reset all players to waiting status (keep sessions and registrations)
+    // Reset all players to waiting status and rejoin active-players room
     gameState.players.forEach(player => {
         player.status = 'waiting';
         player.correctAnswers = 0;
         player.hasAnswered = false;
         player.currentAnswer = null;
         player.isCurrentAnswerCorrect = null;
+        
+        // Rejoin active-players room (in case they were eliminated and removed)
+        const playerSocket = io.sockets.sockets.get(player.socketId);
+        if (playerSocket) {
+            playerSocket.join('active-players');
+        }
     });
     
     // Reset all player sessions to waiting status
