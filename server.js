@@ -105,12 +105,12 @@ const gameState = {
             id: 4,
             text: "جریان مشخص شده چند آمپر است؟",
             options: [
-                "1",
-                "2",
-                "3",
-                "4"
+                "0",
+                "500",
+                "1000",
+                "1500"
             ],
-            correctAnswer: 1,
+            correctAnswer: 3,
             timeLimit: 15
         },
         {
@@ -122,7 +122,7 @@ const gameState = {
                 "دانشکده هوافضا(زمین چمن سابق)",
                 "هیچ کدام"
             ],
-            correctAnswer: 3,
+            correctAnswer: 2,
             timeLimit: 15
         },
         {
