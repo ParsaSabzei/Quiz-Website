@@ -62,77 +62,79 @@ const gameState = {
     currentQuestionIndex: 0,
     currentQuestionStartTime: null, // When the current question was sent
     currentQuestionTimeLimit: null, // Time limit for current question in seconds
+    gameStartedAcks: new Set(), // Track who acknowledged game start
+    currentQuestionAcks: new Set(), // Track who acknowledged current question
     questions: [
         {
             id: 1,
-            text: "کدام جاندار در غذای سلف یافت نشده است؟",
+            text: "در یک مدار سری RLC، چه زمانی رزونانس اتفاق می‌افتد؟",
             options: [
-                "حلزون",
-                "کرم",
-                "دایناسور",
-                "سوسک"
-            ],
-            correctAnswer: 2,
-            timeLimit: 15
-        },
-        {
-            id: 2,
-            text: "کدام از یک اساتید زیر به دانشجویان کلاس شکلات جایزه می دهد؟",
-            options: [
-                "دکتر شمس اللهی",
-                "دکتر سروری",
-                "دکتر فخارزاده",
-                "دکتر سروری"
+                "زمانی که امپدانس خازن و سلف برابر باشند",
+                "زمانی که ولتاژ و جریان هم فاز باشند",
+                "زمانی که فرکانس صفر باشد",
+                "زمانی که مقاومت به حداکثر برسد"
             ],
             correctAnswer: 1,
             timeLimit: 15
         },
         {
-            id: 3,
-            text: "چند نفر از دانشجویان ورودی ۱۴۰۰ برق شریف تحصیلات کارشناسی خود را در هشت ترم تمام کردند؟",
+            id: 2,
+            text: "قانون اهم بیان می‌کند که:",
             options: [
-                "پنج تا ده نفر",
-                "بیست تا بیست و پنج نفر",
-                "چهل تا پنجاه نفر",
-                "دکتر سروری"
+                "V = I × R",
+                "P = V × I",
+                "E = mc²",
+                "F = ma"
             ],
             correctAnswer: 0,
             timeLimit: 15
         },
         {
-            id: 4,
-            text: "جریان مشخص شده چند آمپر است؟",
+            id: 3,
+            text: "واحد اندازه‌گیری توان الکتریکی چیست؟",
             options: [
-                "1",
-                "2",
-                "3",
-                "4"
+                "آمپر",
+                "ولت",
+                "وات",
+                "اهم"
+            ],
+            correctAnswer: 2,
+            timeLimit: 15
+        },
+        {
+            id: 4,
+            text: "در یک ترانسفورماتور ایده‌آل، نسبت ولتاژ ثانویه به اولیه برابر است با:",
+            options: [
+                "نسبت تعداد حلقه‌های اولیه به ثانویه",
+                "نسبت تعداد حلقه‌های ثانویه به اولیه",
+                "نسبت جریان اولیه به ثانویه",
+                "نسبت توان اولیه به ثانویه"
             ],
             correctAnswer: 1,
             timeLimit: 15
         },
         {
             id: 5,
-            text: "زمین چمن سابق دانشگاه در کدام موقعیت قرار داشت؟",
+            text: "مفهوم امپدانس در مدارهای AC چیست؟",
             options: [
-                "دانشکده مکانیک(پردیس شمالی)",
-                "دانشکده کامپیوتر",
-                "دانشکده هوافضا(زمین چمن سابق)",
-                "هیچ کدام"
+                "فقط مقاومت اهمی",
+                "فقط راکتانس",
+                "مجموع برداری مقاومت و راکتانس",
+                "حاصل‌ضرب مقاومت در راکتانس"
             ],
-            correctAnswer: 3,
+            correctAnswer: 2,
             timeLimit: 15
         },
         {
             id: 6,
-            text: "برق چند حرف دارد؟",
+            text: "در یک دیود، جهت جریان مستقیم از کدام سمت به کدام سمت است؟",
             options: [
-                "یک حرف",
-                "دو حرف",
-                "سه حرف",
-                "برق حرف نداره"
+                "از آند به کاتد",
+                "از کاتد به آند",
+                "هر دو جهت",
+                "هیچکدام"
             ],
-            correctAnswer: 3,
+            correctAnswer: 0,
             timeLimit: 15
         }
     ],
@@ -185,16 +187,24 @@ io.on('connection', (socket) => {
     socket.on('admin-connect', () => {
         adminSockets.add(socket.id);
         
-        // Send current game state to admin (only top 20 + winners)
+        console.log('Admin connected, sending lightweight game state...');
+        
+        // Send LIGHTWEIGHT game state to admin
         socket.emit('game-state-update', {
             status: gameState.status,
             playerCount: gameState.players.size,
             currentQuestion: gameState.currentQuestionIndex,
             totalQuestions: gameState.questions.length,
-            players: getTopPlayersForAdmin(),
-            winners: gameState.winners,
-            eliminated: [] // Don't send eliminated list to reduce load
+            players: getPlayersForAdmin(), // Optimized function
+            winners: gameState.winners.map(w => ({
+                firstName: w.firstName,
+                lastName: w.lastName,
+                studentId: w.studentId,
+                correctAnswers: w.correctAnswers
+            }))
         });
+        
+        console.log('✅ Admin state sent successfully');
     });
 
     // Player Registration
@@ -370,6 +380,7 @@ io.on('connection', (socket) => {
         gameState.winners = [];
         gameState.eliminated = [];
         gameState.startTime = new Date();
+        gameState.gameStartedAcks.clear(); // Clear previous ACKs
         
         // Update all players to playing status
         gameState.players.forEach(player => {
@@ -378,16 +389,63 @@ io.on('connection', (socket) => {
             player.hasAnswered = false;
         });
         
-        // Notify all players to start using room broadcast (OPTIMIZED)
-        io.to('active-players').emit('game-started', {
-            message: 'بازی شروع شد!',
-            totalQuestions: gameState.questions.length
+        // Update all player sessions to playing status
+        gameState.playerSessions.forEach(player => {
+            player.status = 'playing';
+            player.correctAnswers = 0;
+            player.hasAnswered = false;
         });
         
-        // Send first question after a short delay
+        const totalPlayers = gameState.players.size;
+        
+        // CRITICAL FIX: Send to each player individually to ensure delivery
+        let sentCount = 0;
+        gameState.players.forEach(player => {
+            io.to(player.socketId).emit('game-started', {
+                message: 'بازی شروع شد!',
+                totalQuestions: gameState.questions.length
+            });
+            sentCount++;
+        });
+        
+        console.log(`\n╔════════════════════════════════════════════════════════════╗`);
+        console.log(`║  🎮 GAME STARTED                                          ║`);
+        console.log(`╠════════════════════════════════════════════════════════════╣`);
+        console.log(`║  ✅ Sent to: ${sentCount} players                              `);
+        console.log(`║  ⏳ Waiting for acknowledgments...                        ║`);
+        console.log(`╚════════════════════════════════════════════════════════════╝\n`);
+        
+        // Send tracking info to admins
+        broadcastToAdmins('game-start-sent', {
+            totalPlayers: totalPlayers,
+            sentCount: sentCount,
+            ackedCount: 0
+        });
+        
+        // Check ACKs after 3 seconds and send first question
         setTimeout(() => {
+            const ackedCount = gameState.gameStartedAcks.size;
+            const missingCount = totalPlayers - ackedCount;
+            
+            console.log(`\n╔════════════════════════════════════════════════════════════╗`);
+            console.log(`║  📊 GAME START ACKNOWLEDGMENT REPORT                      ║`);
+            console.log(`╠════════════════════════════════════════════════════════════╣`);
+            console.log(`║  ✅ Acknowledged: ${ackedCount}/${totalPlayers}                         `);
+            if (missingCount > 0) {
+                console.log(`║  ⚠️  Missing ACKs: ${missingCount} players                           `);
+            }
+            console.log(`╚════════════════════════════════════════════════════════════╝\n`);
+            
+            // Update admins with final ACK count
+            broadcastToAdmins('game-start-ack-report', {
+                totalPlayers: totalPlayers,
+                ackedCount: ackedCount,
+                missingCount: missingCount
+            });
+            
+            // Send first question
             sendQuestion();
-        }, 500); // Reduced from 2000ms to 500ms
+        }, 3000); // Wait 3 seconds for ACKs
         
         // Update admins
         broadcastToAdmins('game-started', {
@@ -459,16 +517,104 @@ io.on('connection', (socket) => {
             message: 'بازی ریست شد'
         });
         
-        // Send updated game state to all admins (only top 20 + winners)
+        // Send updated game state to all admins (lightweight)
         broadcastToAdmins('game-state-update', {
             status: gameState.status,
             playerCount: gameState.players.size,
             currentQuestion: gameState.currentQuestionIndex,
             totalQuestions: gameState.questions.length,
-            players: getTopPlayersForAdmin(),
-            winners: gameState.winners,
-            eliminated: [] // Don't send eliminated list
+            players: getPlayersForAdmin(),
+            winners: gameState.winners.map(w => ({
+                firstName: w.firstName,
+                lastName: w.lastName,
+                studentId: w.studentId,
+                correctAnswers: w.correctAnswers
+            }))
         });
+    });
+
+    // CRITICAL: Handle game status check for polling
+    socket.on('check-game-status', (data) => {
+        const { sessionId } = data;
+        const player = gameState.players.get(socket.id);
+        
+        if (!player) {
+            // Player might be disconnected, check session
+            const sessionPlayer = gameState.playerSessions.get(sessionId);
+            if (sessionPlayer) {
+                // Update socket ID
+                sessionPlayer.socketId = socket.id;
+                gameState.players.set(socket.id, sessionPlayer);
+            } else {
+                return;
+            }
+        }
+        
+        // Send current game status
+        const response = {
+            gameStatus: gameState.status,
+            totalQuestions: gameState.questions.length
+        };
+        
+        // If game is playing, include current question
+        if (gameState.status === 'playing') {
+            const question = gameState.questions[gameState.currentQuestionIndex];
+            if (question) {
+                response.currentQuestion = {
+                    id: question.id,
+                    text: question.text,
+                    options: question.options,
+                    timeLimit: null
+                };
+                response.currentQuestionNumber = gameState.currentQuestionIndex + 1;
+            }
+        }
+        
+        socket.emit('game-status-response', response);
+    });
+
+    // Handle game-started acknowledgment
+    socket.on('game-started-ack', (data) => {
+        const player = gameState.players.get(socket.id);
+        if (player && gameState.status === 'playing') {
+            if (!gameState.gameStartedAcks.has(player.studentId)) {
+                gameState.gameStartedAcks.add(player.studentId);
+                console.log(`✅ [${gameState.gameStartedAcks.size}/${gameState.players.size}] ${player.firstName} ${player.lastName} confirmed game start`);
+                
+                // Update admins in real-time
+                broadcastToAdmins('game-start-ack-update', {
+                    ackedCount: gameState.gameStartedAcks.size,
+                    totalPlayers: gameState.players.size,
+                    playerName: `${player.firstName} ${player.lastName}`
+                });
+            }
+        }
+    });
+    
+    // Handle new-question acknowledgment
+    socket.on('question-received-ack', (data) => {
+        const { questionId } = data;
+        const player = gameState.players.get(socket.id);
+        
+        if (player && player.status === 'playing') {
+            const currentQuestion = gameState.questions[gameState.currentQuestionIndex];
+            if (currentQuestion && currentQuestion.id === questionId) {
+                if (!gameState.currentQuestionAcks.has(player.studentId)) {
+                    gameState.currentQuestionAcks.add(player.studentId);
+                    
+                    const activePlayers = Array.from(gameState.players.values()).filter(p => p.status === 'playing');
+                    console.log(`✅ [${gameState.currentQuestionAcks.size}/${activePlayers.length}] ${player.firstName} ${player.lastName} received Q${gameState.currentQuestionIndex + 1}`);
+                    
+                    // Update admins in real-time
+                    broadcastToAdmins('question-ack-update', {
+                        questionNumber: gameState.currentQuestionIndex + 1,
+                        ackedCount: gameState.currentQuestionAcks.size,
+                        totalActivePlayers: activePlayers.length,
+                        playerName: `${player.firstName} ${player.lastName}`
+                    });
+                }
+            }
+        }
     });
 
     // Disconnect
@@ -502,34 +648,38 @@ io.on('connection', (socket) => {
 });
 
 // Helper Functions
-function getTopPlayersForAdmin() {
-    // Get ALL players (including eliminated) from both active players and sessions
+function getPlayersForAdmin() {
+    // OPTIMIZED: Only send essential data, no deep copying
     const allPlayersMap = new Map();
     
     // Add active players
-    gameState.players.forEach((player, socketId) => {
-        allPlayersMap.set(player.studentId, player);
+    gameState.players.forEach((player) => {
+        allPlayersMap.set(player.studentId, {
+            firstName: player.firstName,
+            lastName: player.lastName,
+            studentId: player.studentId,
+            status: player.status,
+            correctAnswers: player.correctAnswers || 0
+        });
     });
     
     // Add players from sessions (in case they're disconnected)
-    gameState.playerSessions.forEach((player, sessionId) => {
+    gameState.playerSessions.forEach((player) => {
         if (!allPlayersMap.has(player.studentId)) {
-            allPlayersMap.set(player.studentId, player);
+            allPlayersMap.set(player.studentId, {
+                firstName: player.firstName,
+                lastName: player.lastName,
+                studentId: player.studentId,
+                status: player.status,
+                correctAnswers: player.correctAnswers || 0
+            });
         }
     });
     
     // Convert to array and sort by correctAnswers (descending)
     const allPlayers = Array.from(allPlayersMap.values())
-        .sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0))
-        .slice(0, 20) // Top 20 only
-        .map(p => ({
-            socketId: p.socketId,
-            firstName: p.firstName,
-            lastName: p.lastName,
-            studentId: p.studentId,
-            status: p.status,
-            correctAnswers: p.correctAnswers
-        }));
+        .sort((a, b) => b.correctAnswers - a.correctAnswers)
+        .slice(0, 30); // Top 30 for now
     
     return allPlayers;
 }
@@ -558,6 +708,15 @@ function revealQuestionResults() {
                 correct: true,
                 correctAnswer: question.correctAnswer,
                 yourAnswer: player.currentAnswer
+            });
+            
+            // REAL-TIME UPDATE: Notify admins about score increase
+            broadcastToAdmins('player-score-updated', {
+                studentId: player.studentId,
+                firstName: player.firstName,
+                lastName: player.lastName,
+                correctAnswers: player.correctAnswers,
+                status: player.status
             });
         } else {
             // Player answered incorrectly or didn't answer - eliminate
@@ -595,14 +754,15 @@ function revealQuestionResults() {
                 reason: eliminationReason
             });
             
-            // Update admins
+            // REAL-TIME UPDATE: Update admins about elimination
             broadcastToAdmins('player-eliminated', {
                 player: {
                     firstName: player.firstName,
                     lastName: player.lastName,
                     studentId: player.studentId,
                     correctAnswers: player.correctAnswers,
-                    eliminatedAtQuestion: gameState.currentQuestionIndex + 1
+                    eliminatedAtQuestion: gameState.currentQuestionIndex + 1,
+                    status: 'eliminated'
                 },
                 reason: eliminationReason,
                 remainingPlayers: Array.from(gameState.players.values()).filter(p => p.status === 'playing').length
@@ -634,6 +794,7 @@ function sendQuestion() {
     // Record when this question was sent
     gameState.currentQuestionStartTime = Date.now();
     gameState.currentQuestionTimeLimit = question.timeLimit;
+    gameState.currentQuestionAcks.clear(); // Clear previous question ACKs
     
     // Clear any existing per-player temp state
     gameState.players.forEach(p => {
@@ -643,27 +804,68 @@ function sendQuestion() {
         }
     });
 
-    // Send question to all active players using room broadcast (OPTIMIZED for 300+ users)
-    // Note: No timer included - admin controls progression manually
-    io.to('active-players').emit('new-question', {
-        questionNumber: gameState.currentQuestionIndex + 1,
-        totalQuestions: gameState.questions.length,
-        question: {
-            id: question.id,
-            text: question.text,
-            options: question.options,
-            timeLimit: null // No time limit - admin controlled
-        }
+    // CRITICAL FIX: Send to each active player individually to ensure delivery
+    let sentCount = 0;
+    activePlayers.forEach(player => {
+        io.to(player.socketId).emit('new-question', {
+            questionNumber: gameState.currentQuestionIndex + 1,
+            totalQuestions: gameState.questions.length,
+            question: {
+                id: question.id,
+                text: question.text,
+                options: question.options,
+                timeLimit: null // No time limit - admin controlled
+            }
+        });
+        sentCount++;
     });
     
-    // No automatic timer - admin will manually trigger next question
-
-    // Update admins
+    console.log(`\n╔════════════════════════════════════════════════════════════╗`);
+    console.log(`║  ❓ QUESTION ${gameState.currentQuestionIndex + 1}/${gameState.questions.length} SENT                                   ║`);
+    console.log(`╠════════════════════════════════════════════════════════════╣`);
+    console.log(`║  ✅ Sent to: ${sentCount} active players                       `);
+    console.log(`║  ⏳ Waiting for acknowledgments...                        ║`);
+    console.log(`╚════════════════════════════════════════════════════════════╝\n`);
+    
+    // Send tracking info to admins
     broadcastToAdmins('question-sent', {
         questionNumber: gameState.currentQuestionIndex + 1,
         totalQuestions: gameState.questions.length,
-        activePlayers: activePlayers.length
+        activePlayers: activePlayers.length,
+        sentCount: sentCount,
+        ackedCount: 0
     });
+    
+    // Check ACKs after 5 seconds and report
+    setTimeout(() => {
+        const ackedCount = gameState.currentQuestionAcks.size;
+        const missingCount = activePlayers.length - ackedCount;
+        
+        console.log(`\n╔════════════════════════════════════════════════════════════╗`);
+        console.log(`║  📊 QUESTION ${gameState.currentQuestionIndex + 1} ACKNOWLEDGMENT REPORT                   ║`);
+        console.log(`╠════════════════════════════════════════════════════════════╣`);
+        console.log(`║  ✅ Acknowledged: ${ackedCount}/${activePlayers.length}                            `);
+        if (missingCount > 0) {
+            console.log(`║  ⚠️  Missing ACKs: ${missingCount} players                           `);
+            
+            // List players who didn't ACK
+            const ackedIds = gameState.currentQuestionAcks;
+            const missingPlayers = activePlayers.filter(p => !ackedIds.has(p.studentId));
+            console.log(`║  Missing players:                                         ║`);
+            missingPlayers.forEach(p => {
+                console.log(`║    - ${p.firstName} ${p.lastName} (${p.studentId})                `);
+            });
+        }
+        console.log(`╚════════════════════════════════════════════════════════════╝\n`);
+        
+        // Update admins with final ACK report
+        broadcastToAdmins('question-ack-report', {
+            questionNumber: gameState.currentQuestionIndex + 1,
+            totalActivePlayers: activePlayers.length,
+            ackedCount: ackedCount,
+            missingCount: missingCount
+        });
+    }, 5000); // Wait 5 seconds for ACKs
 }
 
 function moveToNextQuestion() {
@@ -766,6 +968,10 @@ function resetGame() {
     // Clear eliminated IDs to allow them to play again
     gameState.eliminatedStudentIds.clear();
     
+    // Clear ACK tracking
+    gameState.gameStartedAcks.clear();
+    gameState.currentQuestionAcks.clear();
+    
     gameState.currentQuestionIndex = 0;
     gameState.currentQuestionStartTime = null;
     gameState.currentQuestionTimeLimit = null;
@@ -777,6 +983,8 @@ function resetGame() {
         clearTimeout(gameState.questionTimer);
         gameState.questionTimer = null;
     }
+    
+    console.log('\n🔄 Game has been reset. All players returned to waiting room.\n');
 }
 
 function broadcastToAdmins(event, data) {

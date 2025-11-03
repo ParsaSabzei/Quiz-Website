@@ -172,17 +172,38 @@ socket.on('question-sent', (data) => {
 socket.on('player-eliminated', (data) => {
     console.log('Player eliminated:', data);
     
-    // Move player to eliminated list
+    // REAL-TIME UPDATE: Update player in local state
     const player = gameState.players.find(p => p.studentId === data.player.studentId);
     if (player) {
         player.status = 'eliminated';
+        player.correctAnswers = data.player.correctAnswers;
         gameState.eliminated.push({
             ...data.player,
             reason: data.reason
         });
     }
     
-    updateUI();
+    // Update active players count
+    elements.activePlayers.textContent = data.remainingPlayers;
+    
+    // Immediate UI update without full refresh
+    updatePlayersList();
+    updateStats();
+});
+
+// REAL-TIME UPDATE: Listen for score updates
+socket.on('player-score-updated', (data) => {
+    console.log('Player score updated:', data);
+    
+    // Find and update player in local state
+    const player = gameState.players.find(p => p.studentId === data.studentId);
+    if (player) {
+        player.correctAnswers = data.correctAnswers;
+        player.status = data.status;
+    }
+    
+    // Immediate UI update - just update the rankings, no full refresh
+    updatePlayersList();
 });
 
 socket.on('game-ended', (data) => {
@@ -200,8 +221,59 @@ socket.on('game-reset', (data) => {
     gameState.winners = [];
     gameState.eliminated = [];
     gameState.currentQuestion = 0;
+    // Clear ACK tracking
+    hideAckStatus();
     // Update UI immediately to show empty rankings and winners
     updateUI();
+});
+
+// ACK tracking events
+socket.on('game-start-sent', (data) => {
+    console.log('Game start sent to', data.sentCount, 'players');
+    showAckStatus('شروع بازی', data.totalPlayers, data.ackedCount);
+});
+
+socket.on('game-start-ack-update', (data) => {
+    console.log('Player ACKed game start:', data.playerName);
+    updateAckStatus(data.ackedCount, data.totalPlayers);
+});
+
+socket.on('game-start-ack-report', (data) => {
+    console.log('Game start ACK report:', data);
+    updateAckStatus(data.ackedCount, data.totalPlayers);
+    
+    if (data.missingCount > 0) {
+        showNotification(`⚠️ ${data.missingCount} بازیکن شروع بازی را دریافت نکردند!`, 'warning');
+    } else {
+        showNotification(`✅ همه بازیکنان وارد بازی شدند!`, 'success');
+    }
+    
+    // Hide ACK status after 3 seconds
+    setTimeout(hideAckStatus, 3000);
+});
+
+socket.on('question-sent', (data) => {
+    console.log('Question sent:', data);
+    showAckStatus(`سوال ${data.questionNumber}`, data.activePlayers, data.ackedCount);
+});
+
+socket.on('question-ack-update', (data) => {
+    console.log('Player ACKed question:', data.playerName);
+    updateAckStatus(data.ackedCount, data.totalActivePlayers);
+});
+
+socket.on('question-ack-report', (data) => {
+    console.log('Question ACK report:', data);
+    updateAckStatus(data.ackedCount, data.totalActivePlayers);
+    
+    if (data.missingCount > 0) {
+        showNotification(`⚠️ ${data.missingCount} بازیکن سوال ${data.questionNumber} را دریافت نکردند!`, 'warning');
+    } else {
+        showNotification(`✅ همه بازیکنان سوال ${data.questionNumber} را دریافت کردند!`, 'success');
+    }
+    
+    // Hide ACK status after 3 seconds
+    setTimeout(hideAckStatus, 3000);
 });
 
 socket.on('error', (data) => {
@@ -285,11 +357,6 @@ function updatePlayersList() {
     const allPlayers = gameState.players;
     const sortedPlayers = [...allPlayers].sort((a, b) => (b.correctAnswers || 0) - (a.correctAnswers || 0));
     
-    console.log('Updating rankings:', {
-        totalPlayers: allPlayers.length,
-        displayedPlayers: sortedPlayers.length
-    });
-    
     elements.activePlayersBadge.textContent = allPlayers.length;
     
     if (sortedPlayers.length === 0) {
@@ -302,33 +369,37 @@ function updatePlayersList() {
         return;
     }
     
-    elements.activePlayersList.innerHTML = `
-        ${sortedPlayers.map((player, index) => `
-            <div class="player-item" style="${player.status === 'eliminated' ? 'opacity: 0.7; border-color: var(--danger-red);' : ''}">
-                <div class="player-name">
-                    ${index + 1}. ${player.firstName} ${player.lastName}
-                    ${player.status === 'eliminated' ? '<span style="color: var(--danger-red); margin-right: 10px;">❌</span>' : ''}
-                    ${player.status === 'winner' ? '<span style="color: var(--yellow); margin-right: 10px;">🏆</span>' : ''}
+    // OPTIMIZED: Use DocumentFragment for better performance
+    const fragment = document.createDocumentFragment();
+    const tempDiv = document.createElement('div');
+    
+    tempDiv.innerHTML = sortedPlayers.map((player, index) => `
+        <div class="player-item" data-student-id="${player.studentId}" style="${player.status === 'eliminated' ? 'opacity: 0.7; border-color: var(--danger-red);' : ''}">
+            <div class="player-name">
+                ${index + 1}. ${player.firstName} ${player.lastName}
+                ${player.status === 'eliminated' ? '<span style="color: var(--danger-red); margin-right: 10px;">❌</span>' : ''}
+                ${player.status === 'winner' ? '<span style="color: var(--yellow); margin-right: 10px;">🏆</span>' : ''}
+            </div>
+            <div class="player-id">شماره دانشجویی: ${player.studentId}</div>
+            <div class="player-stats">
+                <div class="player-stat">
+                    <span class="player-stat-label">پاسخ صحیح</span>
+                    <span class="player-stat-value" style="color: ${player.status === 'eliminated' ? 'var(--danger-red)' : 'var(--success-green)'}; font-size: 1.3rem; font-weight: 700;">${player.correctAnswers || 0}</span>
                 </div>
-                <div class="player-id">شماره دانشجویی: ${player.studentId}</div>
-                <div class="player-stats">
-                    <div class="player-stat">
-                        <span class="player-stat-label">پاسخ صحیح</span>
-                        <span class="player-stat-value" style="color: ${player.status === 'eliminated' ? 'var(--danger-red)' : 'var(--success-green)'}; font-size: 1.3rem; font-weight: 700;">${player.correctAnswers || 0}</span>
-                    </div>
-                    <div class="player-stat">
-                        <span class="player-stat-label">وضعیت</span>
-                        <span class="player-stat-value">${getStatusText(player.status)}</span>
-                    </div>
+                <div class="player-stat">
+                    <span class="player-stat-label">وضعیت</span>
+                    <span class="player-stat-value">${getStatusText(player.status)}</span>
                 </div>
             </div>
-        `).join('')}
-    `;
+        </div>
+    `).join('');
+    
+    // Clear and update in one operation
+    elements.activePlayersList.innerHTML = '';
+    elements.activePlayersList.appendChild(tempDiv);
 }
 
 function updateWinnersList() {
-    console.log('Updating winners list:', gameState.winners);
-    
     elements.winnersBadge.textContent = gameState.winners.length;
     
     // Always show empty state if no winners (whether waiting, playing, or finished)
@@ -346,7 +417,8 @@ function updateWinnersList() {
         return;
     }
     
-    elements.winnersList.innerHTML = gameState.winners.map((winner, index) => `
+    // OPTIMIZED: Build HTML string once
+    const winnersHTML = gameState.winners.map((winner, index) => `
         <div class="winner-item">
             <div class="player-name">🏆 ${index + 1}. ${winner.firstName} ${winner.lastName}</div>
             <div class="player-id">شماره دانشجویی: ${winner.studentId}</div>
@@ -358,6 +430,8 @@ function updateWinnersList() {
             </div>
         </div>
     `).join('');
+    
+    elements.winnersList.innerHTML = winnersHTML;
 }
 
 function updateButtons() {
@@ -396,6 +470,105 @@ function getStatusText(status) {
     };
     return statusMap[status] || status;
 }
+
+// ACK Status Display Functions
+function showAckStatus(eventName, totalPlayers, ackedCount) {
+    let ackStatusEl = document.getElementById('ack-status');
+    
+    if (!ackStatusEl) {
+        ackStatusEl = document.createElement('div');
+        ackStatusEl.id = 'ack-status';
+        ackStatusEl.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(10, 25, 47, 0.95);
+            border: 2px solid var(--electric-blue);
+            border-radius: 15px;
+            padding: 20px 30px;
+            z-index: 2000;
+            box-shadow: 0 10px 40px rgba(0, 212, 255, 0.5);
+            min-width: 300px;
+        `;
+        document.body.appendChild(ackStatusEl);
+    }
+    
+    ackStatusEl.innerHTML = `
+        <div style="color: var(--electric-blue); font-size: 1rem; margin-bottom: 10px; font-weight: 600;">
+            📡 ${eventName}
+        </div>
+        <div style="color: var(--text-light); font-size: 1.5rem; font-weight: 700;">
+            <span id="ack-count">${ackedCount}</span> / <span id="ack-total">${totalPlayers}</span>
+        </div>
+        <div style="margin-top: 10px;">
+            <div style="background: rgba(255,255,255,0.1); height: 10px; border-radius: 5px; overflow: hidden;">
+                <div id="ack-progress" style="background: var(--success-green); height: 100%; width: ${(ackedCount/totalPlayers)*100}%; transition: width 0.3s ease;"></div>
+            </div>
+        </div>
+    `;
+    
+    ackStatusEl.style.display = 'block';
+}
+
+function updateAckStatus(ackedCount, totalPlayers) {
+    const ackCountEl = document.getElementById('ack-count');
+    const ackTotalEl = document.getElementById('ack-total');
+    const ackProgressEl = document.getElementById('ack-progress');
+    
+    if (ackCountEl && ackTotalEl && ackProgressEl) {
+        ackCountEl.textContent = ackedCount;
+        ackTotalEl.textContent = totalPlayers;
+        ackProgressEl.style.width = `${(ackedCount/totalPlayers)*100}%`;
+    }
+}
+
+function hideAckStatus() {
+    const ackStatusEl = document.getElementById('ack-status');
+    if (ackStatusEl) {
+        ackStatusEl.style.display = 'none';
+    }
+}
+
+function showNotification(message, type = 'info') {
+    const notificationEl = document.createElement('div');
+    notificationEl.style.cssText = `
+        position: fixed;
+        top: 100px;
+        right: 20px;
+        background: ${type === 'success' ? 'rgba(0, 255, 136, 0.2)' : 'rgba(255, 215, 0, 0.2)'};
+        border: 2px solid ${type === 'success' ? 'var(--success-green)' : 'var(--yellow)'};
+        color: ${type === 'success' ? 'var(--success-green)' : 'var(--yellow)'};
+        border-radius: 12px;
+        padding: 15px 25px;
+        z-index: 2001;
+        box-shadow: 0 5px 20px rgba(0, 0, 0, 0.3);
+        font-weight: 600;
+        animation: slideIn 0.3s ease;
+    `;
+    notificationEl.textContent = message;
+    document.body.appendChild(notificationEl);
+    
+    setTimeout(() => {
+        notificationEl.style.animation = 'slideOut 0.3s ease';
+        setTimeout(() => {
+            document.body.removeChild(notificationEl);
+        }, 300);
+    }, 5000);
+}
+
+// Add animation styles
+const style = document.createElement('style');
+style.textContent = `
+    @keyframes slideIn {
+        from { transform: translateX(400px); opacity: 0; }
+        to { transform: translateX(0); opacity: 1; }
+    }
+    @keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(400px); opacity: 0; }
+    }
+`;
+document.head.appendChild(style);
 
 // Initialize UI
 updateUI();
