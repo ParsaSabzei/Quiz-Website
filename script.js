@@ -1,5 +1,13 @@
-// Connect to Socket.IO server
-const socket = io();
+// Connect to Socket.IO server with optimized settings for reliability
+const socket = io({
+    reconnection: true,
+    reconnectionAttempts: 10,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000,
+    timeout: 20000,
+    transports: ['websocket', 'polling'],
+    upgrade: true
+});
 
 // Game State
 let gameState = {
@@ -16,7 +24,8 @@ let gameState = {
     timer: null,
     timeLeft: 15,
     isConnected: false,
-    playerStatus: 'not-registered' // not-registered, waiting, playing, eliminated, winner
+    playerStatus: 'not-registered', // not-registered, waiting, playing, eliminated, winner
+    statusCheckInterval: null // For polling game status
 };
 
 // DOM Elements
@@ -107,6 +116,30 @@ socket.on('disconnect', () => {
     gameState.isConnected = false;
 });
 
+socket.on('reconnect', (attemptNumber) => {
+    console.log(`Reconnected to server after ${attemptNumber} attempts`);
+    gameState.isConnected = true;
+    
+    // Try to restore session
+    if (gameState.sessionId && gameState.player.studentId) {
+        console.log('Attempting to reconnect with session:', gameState.sessionId);
+        socket.emit('player-reconnect', {
+            sessionId: gameState.sessionId,
+            studentId: gameState.player.studentId,
+            firstName: gameState.player.firstName,
+            lastName: gameState.player.lastName
+        });
+    }
+});
+
+socket.on('reconnect_attempt', (attemptNumber) => {
+    console.log(`Reconnection attempt ${attemptNumber}...`);
+});
+
+socket.on('reconnect_error', (error) => {
+    console.error('Reconnection error:', error);
+});
+
 socket.on('registration-success', (data) => {
     console.log('✅ Registration successful:', data);
     console.log('Player:', gameState.player);
@@ -114,6 +147,10 @@ socket.on('registration-success', (data) => {
     gameState.playerStatus = data.status || 'waiting';
     saveSession();
     console.log('Session saved. Current status:', gameState.playerStatus);
+    
+    // Start polling for game status changes
+    startStatusPolling();
+    
     // Stay in waiting page until game starts
 });
 
@@ -132,8 +169,10 @@ socket.on('reconnect-success', (data) => {
     // Update UI based on current status
     if (data.status === 'eliminated') {
         showEliminatedPage();
+        stopStatusPolling();
     } else if (data.status === 'winner') {
         showWinnerPage();
+        stopStatusPolling();
     } else if (data.status === 'playing' && data.currentQuestion) {
         // Resume game
         gameState.currentQuestion = data.currentQuestion;
@@ -141,11 +180,14 @@ socket.on('reconnect-success', (data) => {
         gameState.totalQuestions = data.totalQuestions;
         showPage('quiz');
         updatePlayerInfo();
+        stopStatusPolling();
         
         // Show question with remaining time
         showQuestionWithTimeRemaining(data.currentQuestion.timeRemaining);
     } else if (data.status === 'waiting') {
         showPage('waiting');
+        // Start status polling to detect game start
+        startStatusPolling();
     }
     
     saveSession();
@@ -171,6 +213,16 @@ socket.on('game-started', (data) => {
     gameState.totalQuestions = data.totalQuestions;
     gameState.playerStatus = 'playing';
     saveSession();
+    
+    // Stop status polling - we're now playing
+    stopStatusPolling();
+    
+    // Send acknowledgment to server
+    socket.emit('game-started-ack', {
+        sessionId: gameState.sessionId,
+        studentId: gameState.player.studentId
+    });
+    
     // Move to quiz UI immediately; first question will arrive shortly
     if (!pages.quiz.classList.contains('active')) {
         console.log('📄 Switching to quiz page on game start...');
@@ -188,6 +240,13 @@ socket.on('new-question', (data) => {
     gameState.currentQuestionNumber = data.questionNumber;
     gameState.totalQuestions = data.totalQuestions;
     gameState.playerStatus = 'playing';
+    
+    // Send acknowledgment to server
+    socket.emit('question-received-ack', {
+        questionId: data.question.id,
+        sessionId: gameState.sessionId,
+        studentId: gameState.player.studentId
+    });
     
     // Show quiz page if not already shown
     if (!pages.quiz.classList.contains('active')) {
@@ -279,9 +338,41 @@ socket.on('game-reset', (data) => {
     gameState.player.correctAnswers = 0;
     saveSession();
     
+    // Restart status polling
+    startStatusPolling();
+    
     // Go to waiting page
     showPage('waiting');
     updatePlayerInfo();
+});
+
+socket.on('game-status-response', (data) => {
+    console.log('📊 Game status response:', data);
+    
+    // If game has started and we're still in waiting, transition to playing
+    if (data.gameStatus === 'playing' && gameState.playerStatus === 'waiting') {
+        console.log('⚠️ Detected game start via polling! Transitioning to playing...');
+        
+        gameState.playerStatus = 'playing';
+        gameState.totalQuestions = data.totalQuestions || 10;
+        saveSession();
+        
+        // Stop polling
+        stopStatusPolling();
+        
+        // Move to quiz page
+        if (!pages.quiz.classList.contains('active')) {
+            showPage('quiz');
+            updatePlayerInfo();
+        }
+        
+        // If there's a current question, show it
+        if (data.currentQuestion) {
+            gameState.currentQuestion = data.currentQuestion;
+            gameState.currentQuestionNumber = data.currentQuestionNumber;
+            showQuestion();
+        }
+    }
 });
 
 socket.on('error', (data) => {
@@ -470,6 +561,8 @@ function resetGame() {
         clearInterval(gameState.timer);
     }
     
+    stopStatusPolling();
+    
     gameState = {
         sessionId: null,
         player: {
@@ -484,12 +577,42 @@ function resetGame() {
         timer: null,
         timeLeft: 15,
         isConnected: socket.connected,
-        playerStatus: 'not-registered'
+        playerStatus: 'not-registered',
+        statusCheckInterval: null
     };
     
     showPage('registration');
     
     // Clear form
     document.getElementById('registration-form').reset();
+}
+
+// CRITICAL: Status polling to catch game start if socket event is missed
+function startStatusPolling() {
+    // Clear any existing interval
+    stopStatusPolling();
+    
+    console.log('🔄 Started status polling...');
+    
+    // Check status every 2 seconds
+    gameState.statusCheckInterval = setInterval(() => {
+        // Only poll when in waiting status
+        if (gameState.playerStatus === 'waiting' && gameState.sessionId) {
+            socket.emit('check-game-status', {
+                sessionId: gameState.sessionId
+            });
+        } else if (gameState.playerStatus !== 'waiting') {
+            // Stop polling if we're not waiting anymore
+            stopStatusPolling();
+        }
+    }, 2000); // Check every 2 seconds
+}
+
+function stopStatusPolling() {
+    if (gameState.statusCheckInterval) {
+        clearInterval(gameState.statusCheckInterval);
+        gameState.statusCheckInterval = null;
+        console.log('⏸️ Stopped status polling');
+    }
 }
 
